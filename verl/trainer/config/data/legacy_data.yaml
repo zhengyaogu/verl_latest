@@ -15,6 +15,8 @@ val_files: ~/data/rlhf/gsm8k/test.parquet
 
 # The field in the dataset where the prompt is located. Default is 'prompt'.
 prompt_key: prompt
+response_key: answer
+data_source_key: data_source
 
 # The field used to select the reward function (if using different ones per example).
 reward_fn_key: data_source
