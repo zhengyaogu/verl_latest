@@ -38,7 +38,7 @@ install_requires = [
     "ray[default]>=2.41.0",
     "torchdata",
     "tensordict>=0.8.0,<=0.9.1,!=0.9.0",
-    "transformers",
+    "transformers<4.54.0",
     "wandb",
     "packaging>=20.0",
     "tensorboard",
@@ -47,7 +47,7 @@ install_requires = [
 TEST_REQUIRES = ["pytest", "pre-commit", "py-spy", "pytest-asyncio"]
 PRIME_REQUIRES = ["pyext"]
 GEO_REQUIRES = ["mathruler", "torchvision", "qwen_vl_utils"]
-GPU_REQUIRES = ["liger-kernel", "flash-attn"]
+GPU_REQUIRES = ["liger-kernel", "flash-attn", "flashinfer-python"]
 MATH_REQUIRES = ["math-verify"]  # Add math-verify as an optional dependency
 VLLM_REQUIRES = ["tensordict>=0.8.0,<=0.9.1,!=0.9.0", "vllm>=0.7.3,<=0.9.1"]
 SGLANG_REQUIRES = [
