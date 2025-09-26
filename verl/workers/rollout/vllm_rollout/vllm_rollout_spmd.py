@@ -379,6 +379,7 @@ class vLLMRollout(BaseRollout):
         response_attention_mask = get_response_mask(
             response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype
         )
+        prompt_attention_mask = attention_mask
         attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
 
         # all the tp ranks should contain the same data here. data in all ranks are valid
@@ -386,6 +387,8 @@ class vLLMRollout(BaseRollout):
             {
                 "prompts": idx,
                 "responses": response,
+                "response_attention_mask": response_attention_mask,
+                "prompt_attention_mask": prompt_attention_mask,
                 "input_ids": seq,  # here input_ids become the whole sentences
                 "attention_mask": attention_mask,
                 "position_ids": position_ids,

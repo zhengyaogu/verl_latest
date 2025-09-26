@@ -722,7 +722,7 @@ class AgentLoopManager:
         Returns:
             DataProto: Output batch.
         """
-        if self.config.actor_rollout_ref.rollout.free_cache_engine:
+        if self.config.actor_rollout_ref.rollout.free_cache_engine and not self.config.actor_rollout_ref.rollout.sampling_method == "disc":
             self.wake_up()
         chunkes = prompts.chunk(len(self.agent_loop_workers))
         outputs = ray.get(
@@ -732,7 +732,7 @@ class AgentLoopManager:
             ]
         )
         output = DataProto.concat(outputs)
-        if self.config.actor_rollout_ref.rollout.free_cache_engine:
+        if self.config.actor_rollout_ref.rollout.free_cache_engine and not self.config.actor_rollout_ref.rollout.sampling_method == "disc":
             self.sleep()
 
         # calculate performance metrics
