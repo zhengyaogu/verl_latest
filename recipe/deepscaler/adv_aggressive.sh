@@ -49,14 +49,15 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-candidate_batch_size=256 # how many to sample from the dataloader
+candidate_batch_size=640 # how many to sample from the dataloader
 train_batch_size=128 # how many chosen by the critic
 ppo_mini_batch_size=32 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
-critic_train_batch_size=1024 # number of samples from the replay buffer
+critic_train_batch_size=256 # number of samples from the replay buffer
 replay_buffer_size=1000
+adv_predictor_temperature=0.4
 
 max_prompt_length=$((1024 * 4))
 max_response_length=$((1024 * 8))
@@ -67,7 +68,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="adv-test"
+exp_name="adv-aggressive"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -151,9 +152,9 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.enable=true \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.temperature=1.0 \
+    +adv_predictor.temperature=${adv_predictor_temperature} \
     +adv_predictor.num_samples=${train_batch_size} \
-    critic.optim.lr=1e-6 \
+    critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=${CRITIC_MODEL_PATH} \
     critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \

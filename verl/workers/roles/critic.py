@@ -200,11 +200,11 @@ class AdvPredictorWorker(CriticWorker):
         self, batch: DataProto, vpreds: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         adv = batch["advantages"].unsqueeze(-1) # this corresponds to old_values
-        returns = torch.zeros_like(adv)
         response_mask = torch.ones_like(adv)
         micro_batch_metrics = {}
 
         values, _ = self._post_fn_values(batch, vpreds)
+        assert (values >= 0).all().item(), "values should be non-negative"
 
         # print("loss_fn")
         # print("vpreds.shape:", values.shape)
@@ -230,12 +230,14 @@ class AdvPredictorWorker(CriticWorker):
             "critic/vf_loss": vf_loss.detach().item(),
             "critic/vf_clipfrac": vf_clipfrac.detach().item(),
             "critic/vpred_mean": masked_mean(values, response_mask).detach().item(),
+            "critic/vpred": values.mean().detach().item(),
         }
 
         return loss, micro_batch_metrics
     
     def _post_fn_values(self, micro_batch, preds):
         values = preds[:, -1].unsqueeze(-1)
+        values = F.softplus(values) # make sure the values are positive
         return values, {"values": values.clone().detach()}
     
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -276,7 +278,6 @@ class AdvPredictorWorker(CriticWorker):
                     "advantages",
                 ]
                 batch = data.select(batch_keys=select_keys).batch
-                print("batch['advantages'].shape:", batch["advantages"].shape)
                 has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
 
                 # Split to make minibatch iterator for updating the actor
@@ -290,10 +291,7 @@ class AdvPredictorWorker(CriticWorker):
 
                 for epoch in range(self.config.ppo_epochs):
                     for batch_idx, mini_batch in enumerate(dataloader):
-                        print("batch_idx:", batch_idx)
                         self.engine.optimizer_zero_grad()
-                        print("mini_batch['advantages'].shape:", mini_batch["advantages"].shape)
-                        print(type(mini_batch))
                         mini_batch_metrics = self.engine.train_batch(mini_batch, self.loss_fn)
                         grad_norm = self.engine.optimizer_step()
                         mini_batch_metrics["critic/grad_norm"] = grad_norm.detach().item()
