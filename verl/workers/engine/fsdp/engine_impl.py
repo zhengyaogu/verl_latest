@@ -499,7 +499,11 @@ class FSDPEngine(BaseEngine):
         """
         assert self.mode == "eval"
         micro_batch_size = data.meta_info["micro_batch_size"]
-        select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        
+        select_keys = ["input_ids", "attention_mask", "position_ids"]
+        if "responses" in data.batch: # adv predictors does not compute values on responses
+            select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        
         batch = data.select(batch_keys=select_keys).batch
         use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()

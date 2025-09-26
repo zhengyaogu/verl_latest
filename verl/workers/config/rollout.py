@@ -95,6 +95,12 @@ class RolloutConfig(BaseConfig):
     name: Optional[str] = MISSING
     mode: str = "sync"
 
+    sampling_method: str = "greedy"
+    alpha0: float = 0.15
+    reward_threshold: float = 1.0
+    max_num_rounds: int = 4
+    disc_rollout_size_per_round: int = 4
+
     temperature: float = 1.0
     top_k: int = -1
     top_p: float = 1.0

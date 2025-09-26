@@ -24,6 +24,7 @@ import torch
 
 from verl import DataProto
 from verl.utils.import_utils import deprecated
+import verl.utils.torch_functional as verl_F
 
 
 @deprecated("verl.utils.metric.reduce_metrics")
@@ -133,6 +134,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     reward_min = torch.min(non_aborted_sequence_reward).detach().item()
 
     valid_adv = torch.masked_select(advantages, response_mask)
+    abs_adv = verl_F.masked_mean(advantages.abs(), response_mask, axis=-1)
     valid_returns = torch.masked_select(returns, response_mask)
 
     if use_critic:
@@ -169,6 +171,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "critic/advantages/mean": torch.mean(valid_adv).detach().item(),
         "critic/advantages/max": torch.max(valid_adv).detach().item(),
         "critic/advantages/min": torch.min(valid_adv).detach().item(),
+        "critic/advantages/abs_mean": torch.mean(abs_adv).detach().item(),
         # returns
         "critic/returns/mean": torch.mean(valid_returns).detach().item(),
         "critic/returns/max": torch.max(valid_returns).detach().item(),

@@ -147,7 +147,11 @@ class TaskRunner:
             if use_legacy_worker_impl in ["auto", "enable"]:
                 from verl.workers.fsdp_workers import CriticWorker
             elif use_legacy_worker_impl == "disable":
-                from verl.workers.roles import CriticWorker
+                if config.adv_predictor.enable:
+                    from verl.workers.roles import AdvPredictorWorker
+                    CriticWorker = AdvPredictorWorker
+                else:
+                    from verl.workers.roles import CriticWorker
 
                 print("Using new worker implementation")
             else:

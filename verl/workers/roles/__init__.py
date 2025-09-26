@@ -13,6 +13,6 @@
 # limitations under the License.
 
 from .actor import ActorWorker
-from .critic import CriticWorker
+from .critic import CriticWorker, AdvPredictorWorker
 
-__all__ = ["CriticWorker", "ActorWorker"]
+__all__ = ["CriticWorker", "ActorWorker", "AdvPredictorWorker"]
