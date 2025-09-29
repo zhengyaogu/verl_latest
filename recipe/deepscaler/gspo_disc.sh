@@ -26,11 +26,11 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
-CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
+REWARD_MODEL_PATH=Skywork/Skywork-Reward-V2-Qwen3-1.7B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
-gpu_memory_utilization=0.85
+gpu_memory_utilization=0.8
 reward_manager=dapo
 adv_estimator=grpo
 shuffle_dataset=true
@@ -38,9 +38,9 @@ first_time_dataset_prep=true # prepare dataset
 
 test_freq=5
 save_freq=20
-total_epochs=5
-total_training_steps=2000
-val_before_train=False
+total_epochs=3
+total_training_steps=1000
+val_before_train=True
 
 use_kl_in_reward=false
 kl_coef=0.0
@@ -49,16 +49,12 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-candidate_batch_size=256 # how many to sample from the dataloader
-train_batch_size=128 # how many chosen by the critic
-ppo_mini_batch_size=32 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
+train_batch_size=128
+ppo_mini_batch_size=64 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
-critic_train_batch_size=1024 # number of samples from the replay buffer
-replay_buffer_size=1000
-
-max_prompt_length=$((1024 * 4))
+max_prompt_length=$((1024 * 8))
 max_response_length=$((1024 * 8))
 # dapo reward manager params
 enable_overlong_buffer=false # true
@@ -67,7 +63,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="adv-test"
+exp_name="disc-test"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -85,7 +81,13 @@ gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
 #rollout method
-sampling_method=greedy
+sampling_method=disc
+alpha0=0.15
+reward_threshold=1.0
+max_num_rounds=4
+disc_rollout_size_per_round=4
+
+use_rm_score_to_adv=false
 
 WORKING_DIR=/workspace/mnt/verl_latest
 train_files=$WORKING_DIR/data/deepscaler_math.parquet
@@ -100,7 +102,7 @@ python3 -m verl.trainer.main_ppo \
     data.prompt_key=prompt \
     data.truncation='error' \
     data.filter_overlong_prompts=true \
-    data.train_batch_size=${candidate_batch_size} \
+    data.train_batch_size=${train_batch_size} \
     data.max_prompt_length=${max_prompt_length} \
     data.max_response_length=${max_response_length} \
     data.return_raw_chat=true \
@@ -108,6 +110,10 @@ python3 -m verl.trainer.main_ppo \
     algorithm.use_kl_in_reward=${use_kl_in_reward} \
     algorithm.kl_ctrl.kl_coef=${kl_coef} \
     actor_rollout_ref.rollout.sampling_method=${sampling_method} \
+    +actor_rollout_ref.rollout.alpha0=${alpha0} \
+    +actor_rollout_ref.rollout.reward_threshold=${reward_threshold} \
+    +actor_rollout_ref.rollout.max_num_rounds=${max_num_rounds} \
+    +actor_rollout_ref.rollout.disc_rollout_size_per_round=${disc_rollout_size_per_round} \
     actor_rollout_ref.actor.use_kl_loss=${use_kl_loss} \
     actor_rollout_ref.actor.kl_loss_coef=${kl_loss_coef} \
     actor_rollout_ref.actor.clip_ratio_low=${clip_ratio_low} \
@@ -148,29 +154,25 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.do_sample=true \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
-    +adv_predictor.enable=true \
-    +adv_predictor.replay_buffer_size=${replay_buffer_size} \
-    +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.temperature=1.0 \
-    +adv_predictor.num_samples=${train_batch_size} \
-    +adv_predictor.train_critic_only=false \
-    critic.optim.lr=1e-6 \
-    critic.model.use_remove_padding=True \
-    critic.model.path=${CRITIC_MODEL_PATH} \
-    critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
-    critic.model.fsdp_config.param_offload=True \
-    critic.model.fsdp_config.optimizer_offload=True \
+    reward_model.reward_manager=${reward_manager} \
+    reward_model.enable=true \
+    reward_model.model.path="${REWARD_MODEL_PATH}" \
+    +reward_model.add_rm_score_to_adv=${use_rm_score_to_adv} \
+    +reward_model.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
+    +reward_model.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
+    +reward_model.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \
+    +reward_model.reward_kwargs.overlong_buffer_cfg.log=false \
+    +reward_model.reward_kwargs.max_resp_len=${max_response_length} \
     trainer.logger='["console", "tensorboard"]' \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
     trainer.n_gpus_per_node="${GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
-    trainer.use_legacy_worker_impl=disable \
     trainer.val_before_train=${val_before_train} \
     trainer.test_freq=${test_freq} \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

@@ -119,6 +119,15 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     prompt_length = response_info["prompt_length"]
     response_length = response_info["response_length"]
 
+    difficulty_metrics = {}
+    if "difficulty" in batch.non_tensor_batch:
+        difficulty = batch.non_tensor_batch["difficulty"]
+        difficulty_metrics = {
+            "difficulty/mean": np.mean(difficulty).detach().item(),
+            "difficulty/max": np.max(difficulty).detach().item(),
+            "difficulty/min": np.min(difficulty).detach().item(),
+        }
+
     aborted_mask = (response_length == 0).bool()
     non_aborted_mask = ~aborted_mask
 
@@ -172,6 +181,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "critic/advantages/max": torch.max(valid_adv).detach().item(),
         "critic/advantages/min": torch.min(valid_adv).detach().item(),
         "critic/advantages/abs_mean": torch.mean(abs_adv).detach().item(),
+        "critic/advantages/abs_var": torch.var(abs_adv).detach().item(),
         # returns
         "critic/returns/mean": torch.mean(valid_returns).detach().item(),
         "critic/returns/max": torch.max(valid_returns).detach().item(),
@@ -209,6 +219,8 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "prompt_length/max": torch.max(prompt_length).detach().item(),
         "prompt_length/min": torch.min(prompt_length).detach().item(),
         "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
+        # difficulty
+        **difficulty_metrics,
     }
 
     # multi-turn conversation

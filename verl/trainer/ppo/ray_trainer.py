@@ -1092,16 +1092,24 @@ class RayPPOTrainer:
                     adv_predictor_batch = adv_predictor_batch.union(batch)
                     #TODO: sample prompts based on their values
                     
-                    sample_weights = torch.softmax(
-                        adv_predictor_batch.batch["values"].squeeze(-1) / self.config.adv_predictor.temperature,
-                        dim=0
-                    )
-                    sampled_idx = torch.multinomial(sample_weights, self.config.adv_predictor.num_samples, replacement=False)
-                    batch = batch.select_idxs(sampled_idx)
-                    
-                    chosen_uids = np.unique(adv_predictor_batch.non_tensor_batch["uid"][sampled_idx])
-                    uid_mask = np.isin(adv_predictor_batch.non_tensor_batch["uid"], chosen_uids)
-                    adv_predictor_batch = adv_predictor_batch.select_idxs(uid_mask)
+                    if not self.config.adv_predictor.train_critic_only:
+                        sample_weights = torch.nn.functional.gumbel_softmax(
+                            adv_predictor_batch.batch["values"].squeeze(-1),
+                            tau=self.config.adv_predictor.temperature,
+                            dim=0
+                        )
+                        sampled_idx = torch.topk(
+                            sample_weights, 
+                            self.config.adv_predictor.num_samples, 
+                            dim=0,
+                            sorted=False
+                        ).indices.squeeze(-1)
+                        sampled_idx = sampled_idx[torch.randperm(sampled_idx.shape[0])]
+                        batch = batch.select_idxs(sampled_idx)
+                        
+                        chosen_uids = np.unique(adv_predictor_batch.non_tensor_batch["uid"][sampled_idx])
+                        uid_mask = np.isin(adv_predictor_batch.non_tensor_batch["uid"], chosen_uids)
+                        adv_predictor_batch = adv_predictor_batch.select_idxs(uid_mask)
 
                 # inference: greedy sampling simply do rollouts in one go, disc sampling do rollouts in multiple iterations
                 sampling_method = self.config.actor_rollout_ref.rollout.get("sampling_method", "greedy")
@@ -1481,7 +1489,7 @@ class RayPPOTrainer:
                         metrics.update(critic_output_metrics)
 
                     # implement critic warmup
-                    if self.config.trainer.critic_warmup <= self.global_steps:
+                    if self.config.trainer.critic_warmup <= self.global_steps and (not self.config.adv_predictor.enable or not self.config.adv_predictor.train_critic_only):
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable

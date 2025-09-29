@@ -25,22 +25,22 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+MODEL_PATH=Qwen/Qwen2.5-3B
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
 gpu_memory_utilization=0.85
-reward_manager=dapo
+reward_manager=sec
 adv_estimator=grpo
 shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
-test_freq=5
-save_freq=20
-total_epochs=5
+test_freq=10
+save_freq=50
+total_epochs=100
 total_training_steps=2000
-val_before_train=False
+val_before_train=True
 
 use_kl_in_reward=false
 kl_coef=0.0
@@ -49,17 +49,17 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-candidate_batch_size=256 # how many to sample from the dataloader
-train_batch_size=128 # how many chosen by the critic
-ppo_mini_batch_size=32 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
+candidate_batch_size=1024 # how many to sample from the dataloader
+train_batch_size=256 # how many chosen by the critic
+ppo_mini_batch_size=64 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
-critic_train_batch_size=1024 # number of samples from the replay buffer
-replay_buffer_size=1000
+critic_train_batch_size=2048 # number of samples from the replay buffer
+replay_buffer_size=5000
 
-max_prompt_length=$((1024 * 4))
-max_response_length=$((1024 * 8))
+max_prompt_length=$((1024 * 1))
+max_response_length=$((1024 * 4))
 # dapo reward manager params
 enable_overlong_buffer=false # true
 overlong_buffer_len=$((1024 * 4))
@@ -67,19 +67,19 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="adv-test"
+exp_name="zebra"
 
 # Sampling params at rollouts
 temperature=1.0
 top_p=1.0
 top_k=-1 # 0 for HF rollout, -1 for vLLM rollout
-val_top_p=0.7
+val_top_p=1.0
 
 # Performance Related Parameter
 sp_size=1
 use_dynamic_bsz=true
-actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 2))
-infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 3))
+actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 6))
+infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 8))
 offload=true
 gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
@@ -88,8 +88,8 @@ entropy_checkpointing=true # This enables entropy recomputation specifically for
 sampling_method=greedy
 
 WORKING_DIR=/workspace/mnt/verl_latest
-train_files=$WORKING_DIR/data/deepscaler_math.parquet
-test_files=$WORKING_DIR/data/aime2425.parquet
+train_files=${WORKING_DIR}/data/combined/train_zebra.parquet
+test_files=${WORKING_DIR}/data/combined/test_zebra.parquet
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
@@ -148,6 +148,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.do_sample=true \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
+    reward_model.reward_manager=${reward_manager} \
     +adv_predictor.enable=true \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
@@ -171,6 +172,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

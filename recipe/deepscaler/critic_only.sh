@@ -49,7 +49,7 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-candidate_batch_size=256 # how many to sample from the dataloader
+candidate_batch_size=128 # how many to sample from the dataloader
 train_batch_size=128 # how many chosen by the critic
 ppo_mini_batch_size=32 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="adv-test"
+exp_name="critic-only"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -149,11 +149,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     +adv_predictor.enable=true \
+    +adv_predictor.train_critic_only=true \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.temperature=1.0 \
     +adv_predictor.num_samples=${train_batch_size} \
-    +adv_predictor.train_critic_only=false \
     critic.optim.lr=1e-6 \
     critic.model.use_remove_padding=True \
     critic.model.path=${CRITIC_MODEL_PATH} \
@@ -171,6 +171,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@
