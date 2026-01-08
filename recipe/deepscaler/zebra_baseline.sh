@@ -7,7 +7,7 @@ export NCCL_IB_HCA=mlx5
 export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1
 
 # Set how many GPUs we actually have on this node.
-export GPUS_PER_NODE=2
+export GPUS_PER_NODE=$(nvidia-smi --list-gpus | wc -l)
 
 NNODES=1
 export NNODES
@@ -36,7 +36,7 @@ first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
 save_freq=20
-total_epochs=10
+total_epochs=1000
 total_training_steps=2000
 val_before_train=True
 
@@ -67,7 +67,7 @@ exp_name="zebra_baseline"
 temperature=1.0
 top_p=1.0
 top_k=-1 # 0 for HF rollout, -1 for vLLM rollout
-val_top_p=1.0
+val_top_p=0.7
 
 # Performance Related Parameter
 sp_size=1

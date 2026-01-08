@@ -7,12 +7,15 @@ from verl import DataProto
 from verl.utils.reward_score.arc import get_arc_compute_score
 from verl.utils.reward_score.countdown import get_countdown_compute_score
 from verl.utils.reward_score.zebra import get_zebra_compute_score
+from verl.utils.reward_score.deepscaler import get_deepscaler_reward_fn
 from verl.workers.reward_manager import register
 from verl.workers.reward_manager.abstract import AbstractRewardManager
 
 def _select_rm_score_fn(data_source, correct_reward, format_reward):
-    
-    if data_source.startswith('countdown'):
+
+    if data_source.startswith('test'):
+        return get_deepscaler_reward_fn(correct_reward=1.0, format_reward=0.0)
+    elif data_source.startswith('countdown'):
         if 'train' in data_source:
             return get_countdown_compute_score(correct_score=correct_reward, format_score=format_reward)
         elif 'test' in data_source:
@@ -33,6 +36,8 @@ def _select_rm_score_fn(data_source, correct_reward, format_reward):
             return get_arc_compute_score(correct_score=1.0, format_score=0.0)
         else:
             raise ValueError(f'Invalid data source: {data_source}')
+    elif data_source == 'math_train':      
+        return get_deepscaler_reward_fn(correct_reward=1.0, format_reward=format_reward)
     else:
         raise ValueError(f'Invalid data source: {data_source}')
 

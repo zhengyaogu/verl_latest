@@ -137,6 +137,30 @@ class Tracking:
         for default_backend, logger_instance in self.logger.items():
             if backend is None or default_backend in backend:
                 logger_instance.log(data=data, step=step)
+    
+    def log_hist(self, data, step, backend=None):
+        if "tensorboard" in self.logger:
+            self.logger["tensorboard"].log_hist(data=data, step=step)
+        else:
+            print(f"Tensorboard is not in the logger, skipping log_hist for {data}")
+    
+    def log_figure(self, data, step, backend=None):
+        if "tensorboard" in self.logger:
+            self.logger["tensorboard"].log_figure(data=data, step=step)
+        else:
+            print(f"Tensorboard is not in the logger, skipping log_figure for {data}")
+    
+    def log_heatmap(self, data, step, backend=None):
+        if "tensorboard" in self.logger:
+            self.logger["tensorboard"].log_heatmap(data=data, step=step)
+        else:
+            print(f"Tensorboard is not in the logger, skipping log_heatmap for {data}")
+    
+    def flush(self):
+        if "tensorboard" in self.logger:
+            self.logger["tensorboard"].writer.flush()
+        else:
+            print(f"Tensorboard is not in the logger, skipping flush")
 
     def __del__(self):
         if "wandb" in self.logger:
@@ -212,16 +236,62 @@ class _TensorboardAdapter:
         from torch.utils.tensorboard import SummaryWriter
 
         tensorboard_dir = os.environ.get("TENSORBOARD_DIR", f"tensorboard_log/{project_name}/{experiment_name}")
-        os.makedirs(tensorboard_dir, exist_ok=True)
+        # Create directory with proper permissions (0o755 = rwxr-xr-x)
+        os.makedirs(tensorboard_dir, mode=0o755, exist_ok=True)
         print(f"Saving tensorboard log to {tensorboard_dir}.")
         self.writer = SummaryWriter(tensorboard_dir)
+        self._permission_error_logged = False
 
     def log(self, data, step):
         for key in data:
-            self.writer.add_scalar(key, data[key], step)
+            try:
+                self.writer.add_scalar(key, data[key], step)
+            except PermissionError as e:
+                if not self._permission_error_logged:
+                    print(f"WARNING: Permission denied when writing to TensorBoard log. "
+                          f"This may occur in distributed environments. Error: {e}")
+                    self._permission_error_logged = True
+                # Continue execution without crashing
+    
+    def log_hist(self, data, step):
+        for key in data:
+            try:
+                self.writer.add_histogram(key, data[key], step)
+            except PermissionError as e:
+                if not self._permission_error_logged:
+                    print(f"WARNING: Permission denied when writing to TensorBoard log. "
+                          f"This may occur in distributed environments. Error: {e}")
+                    self._permission_error_logged = True
+                # Continue execution without crashing
+    
+    def log_figure(self, data, step):
+        for key in data:
+            try:
+                self.writer.add_figure(key, data[key], step)
+            except PermissionError as e:
+                if not self._permission_error_logged:
+                    print(f"WARNING: Permission denied when writing to TensorBoard log. "
+                          f"This may occur in distributed environments. Error: {e}")
+                    self._permission_error_logged = True
+                # Continue execution without crashing
+    
+    def log_heatmap(self, data, step):
+        for key in data:
+            try:
+                self.writer.add_image(key, data[key], step)
+            except PermissionError as e:
+                if not self._permission_error_logged:
+                    print(f"WARNING: Permission denied when writing to TensorBoard log. "
+                          f"This may occur in distributed environments. Error: {e}")
+                    self._permission_error_logged = True
+                # Continue execution without crashing
 
     def finish(self):
-        self.writer.close()
+        try:
+            self.writer.close()
+        except PermissionError:
+            # Ignore permission errors during close
+            pass
 
 
 class _MlflowLoggingAdapter:
@@ -404,8 +474,10 @@ class ValidationGenerationsLogger:
                 default_dir = "tensorboard_log"
 
             tensorboard_dir = os.environ.get("TENSORBOARD_DIR", default_dir)
-            os.makedirs(tensorboard_dir, exist_ok=True)
+            # Create directory with proper permissions (0o755 = rwxr-xr-x)
+            os.makedirs(tensorboard_dir, mode=0o755, exist_ok=True)
             self.writer = SummaryWriter(log_dir=tensorboard_dir)
+            self._permission_error_logged = False
 
         # Format the samples data into readable text
         text_content = f"**Generation Results - Step {step}**\n\n"
@@ -427,6 +499,13 @@ class ValidationGenerationsLogger:
             text_content += "---\n\n"
 
         # Log to tensorboard as text
-        self.writer.add_text("val/generations", text_content, step)
-        # Flush to ensure data is written
-        self.writer.flush()
+        try:
+            self.writer.add_text("val/generations", text_content, step)
+            # Flush to ensure data is written
+            self.writer.flush()
+        except PermissionError as e:
+            if not getattr(self, "_permission_error_logged", False):
+                print(f"WARNING: Permission denied when writing to TensorBoard log. "
+                      f"This may occur in distributed environments. Error: {e}")
+                self._permission_error_logged = True
+            # Continue execution without crashing

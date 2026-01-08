@@ -120,12 +120,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     response_length = response_info["response_length"]
 
     difficulty_metrics = {}
-    if "difficulty" in batch.non_tensor_batch:
-        difficulty = batch.non_tensor_batch["difficulty"]
+    if "difficulty" in batch.batch:
+        print("DIFFICULTY FOUND IN TENSOR BATCH")
+        difficulty = batch.batch["difficulty"].float()
         difficulty_metrics = {
-            "difficulty/mean": np.mean(difficulty).detach().item(),
-            "difficulty/max": np.max(difficulty).detach().item(),
-            "difficulty/min": np.min(difficulty).detach().item(),
+            "difficulty/mean": torch.mean(difficulty).detach().item(),
+            "difficulty/max": torch.max(difficulty).detach().item(),
+            "difficulty/min": torch.min(difficulty).detach().item(),
         }
 
     aborted_mask = (response_length == 0).bool()

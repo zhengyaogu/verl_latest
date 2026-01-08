@@ -26,7 +26,7 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen2.5-3B
-CRITIC_MODEL_PATH=Qwen/Qwen3-4B
+CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=true # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -37,7 +37,7 @@ first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
 save_freq=20
-total_epochs=100000
+total_epochs=100
 total_training_steps=2000
 val_before_train=true
 
@@ -66,7 +66,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_4B_k8_softmax_anneal_1_10"
+exp_name="zebra_0.6B_stochastic_topk_k32"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -151,13 +151,10 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.critic_warmup=5 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.sampler=softmax \
-    +adv_predictor.temperature_annealing=true \
-    +adv_predictor.temperature=1.0 \
-    +adv_predictor.max_temperature=10.0 \
+    +adv_predictor.sampler=stochastic_topk \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
-    +adv_predictor.ema_coeff=0.5 \
+    +adv_predictor.ema_coeff=0.2 \
     critic.optim.lr=1e-6 \
     critic.model.use_remove_padding=true \
     critic.model.path=${CRITIC_MODEL_PATH} \

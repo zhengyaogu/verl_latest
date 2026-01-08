@@ -179,7 +179,10 @@ def append_to_dict(data: dict, new_data: dict, prefix: str = ""):
         new_key = f"{prefix}{key}"
         if new_key not in data:
             data[new_key] = []
-        data[new_key].append(val)
+        if isinstance(val, list):
+            data[new_key].extend(val)
+        else:
+            data[new_key].append(val)
 
 
 class NestedNamespace(SimpleNamespace):

@@ -33,6 +33,7 @@ from verl.utils.ulysses import (
     get_ulysses_sequence_parallel_world_size,
     slice_input_tensor,
 )
+from verl.utils.model import DualHeadTokenClassificationModel
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -266,6 +267,9 @@ def apply_monkey_patch(
     """
 
     """Replace _flash_attention_forward to _ulysses_flash_attention_forward"""
+    if type(model) == DualHeadTokenClassificationModel:
+        model = model.base_model
+    
     module = sys.modules[model.__module__]
 
     try:
