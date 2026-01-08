@@ -32,6 +32,8 @@ from verl.utils.device import is_cuda_available
 from verl.utils.fs import copy_to_local, is_non_local, local_mkdir_safe
 from verl.utils.fsdp_utils import fsdp_version, get_fsdp_full_state_dict, get_fsdp_state_ctx
 from verl.utils.logger import log_with_rank
+from verl.utils.model import DualHeadTokenClassificationModel
+
 
 from .checkpoint_manager import BaseCheckpointManager
 
@@ -265,9 +267,18 @@ class FSDPCheckpointManager(BaseCheckpointManager):
 
             hf_config_tokenizer_path = os.path.join(local_path, "huggingface")
             local_mkdir_safe(hf_config_tokenizer_path)
-            model_config = unwrap_model.config
+            if type(unwrap_model) == DualHeadTokenClassificationModel:
+                model_config = unwrap_model.base_model.config
+            else:
+                model_config = unwrap_model.config
             generation_config = None
-            if unwrap_model.can_generate() and hasattr(model_config, "name_or_path") and model_config.name_or_path:
+
+            if type(unwrap_model) == DualHeadTokenClassificationModel:
+                base_model = unwrap_model.base_model
+            else:
+                base_model = unwrap_model
+
+            if base_model.can_generate() and hasattr(model_config, "name_or_path") and model_config.name_or_path:
                 try:
                     # Some model's name_or_path is empty if not initialized from pretrained,
                     # in this cases, we don't save generation config.

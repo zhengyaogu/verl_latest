@@ -27,12 +27,16 @@ from torch import nn
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
+    AutoModelForTokenClassification,
     GenerationConfig,
     MistralForSequenceClassification,
     PretrainedConfig,
     PreTrainedModel,
 )
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import (
+    CausalLMOutputWithPast,
+    TokenClassifierOutput
+)
 
 from verl.models.registry import ModelRegistry
 from verl.utils.import_utils import is_trl_available
@@ -621,17 +625,33 @@ def patch_valuehead_model(model) -> None:
 
 
 def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_code):
+    print("inside load_valuehead_model")
     from transformers import AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
 
     try:
-        model = AutoModelForTokenClassification.from_pretrained(
-            pretrained_model_name_or_path=local_path,
-            torch_dtype=torch_dtype,
-            config=model_config,
-            attn_implementation="flash_attention_2",
-            trust_remote_code=trust_remote_code,
-        )
+        if model_config.num_heads == 1:
+            print("num_heads == 1")
+            model = AutoModelForTokenClassification.from_pretrained(
+                pretrained_model_name_or_path=local_path,
+                torch_dtype=torch_dtype,
+                config=model_config,
+                attn_implementation="flash_attention_2",
+                trust_remote_code=trust_remote_code,
+            )
+        elif model_config.num_heads == 2:
+            print("num_heads == 2")
+            model = DualHeadTokenClassificationModel.from_pretrained(
+                pretrained_model_name_or_path=local_path,
+                torch_dtype=torch_dtype,
+                config=model_config,
+                attn_implementation="flash_attention_2",
+                trust_remote_code=trust_remote_code,
+            )
+        else:
+            raise ValueError(f"Unsupported number of heads: {model_config.num_heads}")
+        print(model)
         return model
+    
     except BaseException as e:
         if not is_trl_available():
             raise RuntimeError(
@@ -639,6 +659,7 @@ def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_cod
             ) from e
 
     assert is_trl_available()
+    print("exception detected in load_valuehead_model")
 
     from trl import AutoModelForCausalLMWithValueHead
 
@@ -692,3 +713,77 @@ def get_hf_auto_model_class(hf_config):
 class CausalLMOutputForPPO(CausalLMOutputWithPast):
     log_probs: Optional[torch.FloatTensor] = None
     entropy: Optional[torch.FloatTensor] = None
+
+@dataclass
+class DualHeadTokenClassifierOutput(TokenClassifierOutput):
+    """Output with two sets of logits."""
+    logits_head2: torch.FloatTensor = None
+
+
+class DualHeadTokenClassificationModel(nn.Module):
+    """
+    Token classification model with two prediction heads.
+    Wraps AutoModelForTokenClassification and adds a second head.
+    """
+    
+    def __init__(self, base_model, num_labels_head2: int):
+        super().__init__()
+        self.base_model = base_model
+        self.num_labels_head2 = num_labels_head2
+        
+        # Add second classification head
+        hidden_size = base_model.config.hidden_size
+        self.dropout = nn.Dropout(p=0.1, inplace=False)
+        self.classifier_head2 = nn.Linear(hidden_size, num_labels_head2)
+    
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        """
+        Load model like AutoModelForTokenClassification.from_pretrained()
+        
+        Args:
+            pretrained_model_name_or_path: Model identifier or path
+            num_labels_head1: Number of labels for first head
+            num_labels_head2: Number of labels for second head
+            **kwargs: Additional arguments passed to AutoModelForTokenClassification
+        """
+        base_model = AutoModelForTokenClassification.from_pretrained(
+            pretrained_model_name_or_path,
+            **kwargs
+        )
+        return cls(base_model, kwargs["config"].num_labels)
+    
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        **kwargs
+    ):
+        
+        # Get base model outputs with hidden states
+        base_outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_hidden_states=True,
+            **kwargs
+        )
+        
+        # Get logits from second head using last hidden state
+        sequence_output = base_outputs.hidden_states[-1]
+        sequence_output = self.dropout(sequence_output)
+        logits_head2 = self.classifier_head2(sequence_output)
+        
+        return DualHeadTokenClassifierOutput(
+            loss=base_outputs.loss if base_outputs.loss is not None else None,
+            logits=base_outputs.logits,
+            logits_head2=logits_head2
+        )

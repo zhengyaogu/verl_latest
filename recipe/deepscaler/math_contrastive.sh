@@ -25,20 +25,21 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-3B
-CRITIC_MODEL_PATH=Qwen/Qwen3-4B
-offload=true # it's a small model, offloading will just slow-down training
+MODEL_PATH=Qwen/Qwen3-1.7B
+CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
+offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
 gpu_memory_utilization=0.85
 reward_manager=sec
+adv_estimator=grpo
 shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
 save_freq=20
-total_epochs=100000
-total_training_steps=2000
+total_epochs=10000
+total_training_steps=1000
 val_before_train=true
 
 use_kl_in_reward=false
@@ -55,7 +56,7 @@ ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
 critic_train_batch_size=256 # number of samples from the replay buffer
-replay_buffer_size=16
+replay_buffer_size=2
 
 max_prompt_length=$((1024 * 1))
 max_response_length=$((1024 * 4))
@@ -66,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_4B_k8_softmax_anneal_1_10"
+exp_name="math_contrastive_cliprange_0.2_topp_0.9"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -79,6 +80,7 @@ sp_size=1
 use_dynamic_bsz=true
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 6))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 8))
+offload=true
 gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
@@ -86,8 +88,8 @@ entropy_checkpointing=true # This enables entropy recomputation specifically for
 sampling_method=greedy
 
 WORKING_DIR=/workspace/mnt/verl_latest
-train_files=${WORKING_DIR}/data/combined/train_zebra.parquet
-test_files=${WORKING_DIR}/data/combined/test_zebra.parquet
+train_files=${WORKING_DIR}/data/math/math_train.parquet
+test_files=${WORKING_DIR}/data/math/math_test.parquet
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
@@ -117,6 +119,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=${actor_ppo_max_token_len} \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
+    actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.name=${rollout_engine} \
     actor_rollout_ref.rollout.mode=${rollout_mode} \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
@@ -151,19 +154,24 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.critic_warmup=5 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.sampler=softmax \
-    +adv_predictor.temperature_annealing=true \
-    +adv_predictor.temperature=1.0 \
-    +adv_predictor.max_temperature=10.0 \
+    +adv_predictor.sampler=uniform \
+    +adv_predictor.temperature_annealing=false \
+    +adv_predictor.temperature=2.0 \
+    +adv_predictor.top_p_annealing=false \
+    +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
     critic.optim.lr=1e-6 \
-    critic.model.use_remove_padding=true \
+    +critic.model.style=osmd \
+    +critic.model.num_labels=1 \
+    +critic.model.num_heads=1 \
+    +critic.clip_range=0.5 \
+    critic.model.use_remove_padding=True \
     critic.model.path=${CRITIC_MODEL_PATH} \
     critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
-    critic.model.fsdp_config.param_offload=true \
-    critic.model.fsdp_config.optimizer_offload=true \
+    critic.model.fsdp_config.param_offload=True \
+    critic.model.fsdp_config.optimizer_offload=True \
     trainer.logger='["console", "tensorboard"]' \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
@@ -175,6 +183,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

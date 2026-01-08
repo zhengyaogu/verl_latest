@@ -7,8 +7,7 @@ export NCCL_IB_HCA=mlx5
 export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1
 
 # Set how many GPUs we actually have on this node.
-export GPUS_PER_NODE=$(nvidia-smi --list-gpus | wc -l)
-echo "Number of GPUs available: $GPUS_PER_NODE"
+export GPUS_PER_NODE=2
 
 NNODES=1
 export NNODES
@@ -26,20 +25,20 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen2.5-3B
-CRITIC_MODEL_PATH=Qwen/Qwen3-4B
-offload=true # it's a small model, offloading will just slow-down training
+offload=False # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
-gpu_memory_utilization=0.85
+gpu_memory_utilization=0.6
 reward_manager=sec
+adv_estimator=grpo
 shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
 save_freq=20
-total_epochs=100000
+total_epochs=10
 total_training_steps=2000
-val_before_train=true
+val_before_train=True
 
 use_kl_in_reward=false
 kl_coef=0.0
@@ -48,14 +47,10 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-candidate_batch_size=2048 # how many to sample from the dataloader
-train_batch_size=256 # how many chosen by the critic
+train_batch_size=256
 ppo_mini_batch_size=64 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
-
-critic_train_batch_size=256 # number of samples from the replay buffer
-replay_buffer_size=16
 
 max_prompt_length=$((1024 * 1))
 max_response_length=$((1024 * 4))
@@ -66,7 +61,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_4B_k8_softmax_anneal_1_10"
+exp_name="arc_baseline"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -79,15 +74,13 @@ sp_size=1
 use_dynamic_bsz=true
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 6))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 8))
+offload=true
 gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
-#rollout method
-sampling_method=greedy
-
 WORKING_DIR=/workspace/mnt/verl_latest
-train_files=${WORKING_DIR}/data/combined/train_zebra.parquet
-test_files=${WORKING_DIR}/data/combined/test_zebra.parquet
+train_files=${WORKING_DIR}/data/combined/train_arc.parquet
+test_files=${WORKING_DIR}/data/combined/test_arc.parquet
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
@@ -98,14 +91,12 @@ python3 -m verl.trainer.main_ppo \
     data.prompt_key=prompt \
     data.truncation='error' \
     data.filter_overlong_prompts=true \
-    data.train_batch_size=${candidate_batch_size} \
+    data.train_batch_size=${train_batch_size} \
     data.max_prompt_length=${max_prompt_length} \
     data.max_response_length=${max_response_length} \
-    data.return_raw_chat=true \
     actor_rollout_ref.rollout.n=${n_resp_per_prompt} \
     algorithm.use_kl_in_reward=${use_kl_in_reward} \
     algorithm.kl_ctrl.kl_coef=${kl_coef} \
-    actor_rollout_ref.rollout.sampling_method=${sampling_method} \
     actor_rollout_ref.actor.use_kl_loss=${use_kl_loss} \
     actor_rollout_ref.actor.kl_loss_coef=${kl_loss_coef} \
     actor_rollout_ref.actor.clip_ratio_low=${clip_ratio_low} \
@@ -117,6 +108,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=${actor_ppo_max_token_len} \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
+    actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.name=${rollout_engine} \
     actor_rollout_ref.rollout.mode=${rollout_mode} \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
@@ -144,32 +136,16 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.top_k=${top_k} \
     actor_rollout_ref.rollout.val_kwargs.do_sample=true \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
+    actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
-    +adv_predictor.enable=true \
-    +adv_predictor.dormant_steps=50 \
-    +adv_predictor.critic_warmup=5 \
-    +adv_predictor.replay_buffer_size=${replay_buffer_size} \
-    +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.sampler=softmax \
-    +adv_predictor.temperature_annealing=true \
-    +adv_predictor.temperature=1.0 \
-    +adv_predictor.max_temperature=10.0 \
-    +adv_predictor.num_samples=${train_batch_size} \
-    +adv_predictor.train_critic_only=false \
-    +adv_predictor.ema_coeff=0.5 \
-    critic.optim.lr=1e-6 \
-    critic.model.use_remove_padding=true \
-    critic.model.path=${CRITIC_MODEL_PATH} \
-    critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
-    critic.model.fsdp_config.param_offload=true \
-    critic.model.fsdp_config.optimizer_offload=true \
+    +adv_predictor.enable=false \
     trainer.logger='["console", "tensorboard"]' \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
     trainer.n_gpus_per_node="${GPUS_PER_NODE}" \
     trainer.nnodes="${NNODES}" \
-    trainer.use_legacy_worker_impl=disable \
     trainer.val_before_train=${val_before_train} \
     trainer.test_freq=${test_freq} \
     trainer.save_freq=${save_freq} \

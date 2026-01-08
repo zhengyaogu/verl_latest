@@ -124,7 +124,18 @@ class RayResourcePool(ResourcePool):
             bundle[device_name] = 1
             if self.accelerator_type is not None:
                 bundle[self.accelerator_type] = 1e-4
-        pg_scheme = [[bundle.copy() for _ in range(process_count)] for process_count in self._store]
+        
+        # Filter out zero process counts to avoid empty bundles
+        valid_process_counts = [count for count in self._store if count > 0]
+        if not valid_process_counts:
+            raise ValueError(
+                f"All process counts in resource pool are zero or empty. "
+                f"Resource pool store: {self._store}. "
+                f"This usually indicates that n_gpus_per_node is 0 or nnodes is 0. "
+                f"Please check your training configuration."
+            )
+        
+        pg_scheme = [[bundle.copy() for _ in range(process_count)] for process_count in valid_process_counts]
 
         lifetime = "detached" if self.detached else None
 

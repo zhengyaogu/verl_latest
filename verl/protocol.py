@@ -627,7 +627,7 @@ class DataProto:
         tensors = {}
         # tensor batch
         for key in batch_keys:
-            assert key in self.batch.keys()
+            assert key in self.batch.keys(), "key {} not found in batch".format(key)
             tensors[key] = self.batch.pop(key)
         non_tensors = {}
         # non tensor batch

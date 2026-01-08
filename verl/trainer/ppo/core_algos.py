@@ -29,6 +29,7 @@ import torch
 from omegaconf import DictConfig
 
 import verl.utils.torch_functional as verl_F
+import torch.nn.functional as F
 from verl.trainer.config import AlgoConfig
 from verl.utils.import_utils import deprecated
 from verl.workers.config import ActorConfig
@@ -701,7 +702,7 @@ def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     return token_level_scores - kl * kl_ratio
 
 
-def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str):
+def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str, weights: torch.Tensor = None):
     """
     Aggregate the loss matrix into a scalar.
 
@@ -716,6 +717,12 @@ def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str
         loss: `a scalar torch.Tensor`
             aggregated loss
     """
+    if weights is not None:
+        assert weights.shape[0] == loss_mat.shape[0], "weights must have the same batch size as loss_mat"
+        if not weights.ndim == loss_mat.ndim:
+            weights = weights.unsqueeze(-1)
+        loss_mat = loss_mat * weights
+    
     if loss_agg_mode == "token-mean":
         loss = verl_F.masked_mean(loss_mat, loss_mask)
     elif loss_agg_mode == "seq-mean-token-sum":
@@ -735,6 +742,25 @@ def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str
         raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
 
     return loss
+
+@torch.no_grad()
+def compute_loss_var(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str):
+    """
+    Compute the variance of the loss matrix.
+    """
+    if loss_agg_mode == "token-mean":
+        mean_losses = verl_F.masked_mean(loss_mat, loss_mask, dim=-1)
+        loss_var = torch.var(mean_losses)
+    elif loss_agg_mode == "seq-mean-token-sum" or loss_agg_mode == "seq-mean-token-sum-norm":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)  # token-sum
+        loss_var = torch.var(seq_losses)
+    elif loss_agg_mode == "seq-mean-token-mean":
+        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1) / torch.sum(loss_mask, dim=-1)  # token-mean
+        loss_var = torch.var(seq_losses)
+    else:
+        raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
+    
+    return loss_var
 
 
 @deprecated("verl.trainer.ppo.core_algos.compute_policy_loss_vanilla")
@@ -1259,6 +1285,7 @@ def compute_value_loss(
     response_mask: torch.Tensor,
     cliprange_value: float,
     loss_agg_mode: str = "token-mean",
+    weights: torch.Tensor = None,
 ):
     """
     Compute the clipped value-function loss for PPO.
@@ -1289,7 +1316,51 @@ def compute_value_loss(
     vf_losses1 = (vpreds - returns) ** 2
     vf_losses2 = (vpredclipped - returns) ** 2
     clipped_vf_losses = torch.max(vf_losses1, vf_losses2)
-    vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+    vf_loss = 0.5 * agg_loss(loss_mat=clipped_vf_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=weights)
+    # vf_loss_var = compute_loss_var(0.5 * clipped_vf_losses, response_mask, loss_agg_mode)
+    vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
+    return vf_loss, vf_clipfrac
+
+def compute_ordinal_loss(
+    logits: torch.Tensor,
+    target_levels: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    weights: torch.Tensor = None,
+):
+    n = logits.shape[-1]
+    t = (torch.arange(n, device=target_levels.device).unsqueeze(0) < target_levels.unsqueeze(1)).unsqueeze(1).float()
+    loss = F.binary_cross_entropy_with_logits(logits, t, reduction="none")
+    loss = loss.sum(dim=-1) / n # average over the levels
+    response_mask = torch.ones_like(loss)
+    loss = agg_loss(loss_mat=loss, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=weights)
+    return loss
+
+def compute_osmd_loss(
+    probs: torch.Tensor,
+    losses: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+):
+    adv = probs * losses
+    response_mask = torch.ones_like(adv)
+    loss = agg_loss(loss_mat=adv, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=None)
+    return loss
+
+def compute_expectile_loss(
+    vpreds: torch.Tensor,
+    returns: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    cliprange_value: float,
+    tau: float,
+    loss_agg_mode: str = "token-mean",
+    weights: torch.Tensor = None,
+):
+    vpredclipped = verl_F.clip_by_value(vpreds, values - cliprange_value, values + cliprange_value)
+    diff = vpreds - returns
+    weight = torch.where(diff > 0, tau, (1 - tau))
+    vf_losses1 = weight * (diff ** 2)
+    vf_losses2 = (vpredclipped - returns) ** 2
+    vf_loss = agg_loss(loss_mat=vf_losses1, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=weights)
     vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
     return vf_loss, vf_clipfrac
 

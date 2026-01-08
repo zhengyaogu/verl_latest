@@ -26,7 +26,7 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen2.5-3B
-CRITIC_MODEL_PATH=Qwen/Qwen3-4B
+CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=true # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -66,7 +66,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_4B_k8_softmax_anneal_1_10"
+exp_name="zebra_0.6B_uniform_topp_anneal_9_5"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -88,6 +88,8 @@ sampling_method=greedy
 WORKING_DIR=/workspace/mnt/verl_latest
 train_files=${WORKING_DIR}/data/combined/train_zebra.parquet
 test_files=${WORKING_DIR}/data/combined/test_zebra.parquet
+
+RESUME_FROM_PATH=/workspace/mnt/verl_latest/recipe/deepscaler/checkpoints/DISC/zebra_4B_k8_osmd_alpha_0.1_tau_1/global_step_60
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
@@ -147,14 +149,15 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
     +adv_predictor.enable=true \
-    +adv_predictor.dormant_steps=50 \
-    +adv_predictor.critic_warmup=5 \
+    +adv_predictor.dormant_steps=1 \
+    +adv_predictor.critic_warmup=1 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.sampler=softmax \
-    +adv_predictor.temperature_annealing=true \
+    +adv_predictor.sampler=uniform \
     +adv_predictor.temperature=1.0 \
-    +adv_predictor.max_temperature=10.0 \
+    +adv_predictor.top_p_annealing=true \
+    +adv_predictor.top_p=0.95 \
+    +adv_predictor.final_top_p=0.7 \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
@@ -175,6 +178,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

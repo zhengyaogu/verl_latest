@@ -15,6 +15,7 @@
 The concrete Engine implementation using PyTorch FullyShardedDataParallel (FSDP)
 """
 
+from dataclasses import dataclass
 import gc
 import itertools
 import logging
@@ -27,6 +28,7 @@ import torch.distributed
 from omegaconf import OmegaConf
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from verl.utils.model import DualHeadTokenClassifierOutput, DualHeadTokenClassificationModel
 
 from verl import DataProto
 from verl.models.transformers.monkey_patch import apply_monkey_patch
@@ -77,6 +79,11 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
 device_name = get_device_name()
+
+@dataclass
+class Preds:
+    preds: torch.Tensor
+    preds2: torch.Tensor
 
 
 @EngineRegistry.register("fsdp")
@@ -215,7 +222,11 @@ class FSDPEngine(BaseEngine):
             attn_implementation="flash_attention_2",
             trust_remote_code=config.model.get("trust_remote_code", False),
         )
-        model_config.num_labels = 1
+
+        model_config.num_labels = config.model.get("num_labels", 1)
+        model_config.num_heads = config.model.get("num_heads", 1)
+        print("model_config.num_labels:", model_config.num_labels)
+        print("model_config.num_heads:", model_config.num_heads)
         # patch for kimi-vl
         if getattr(model_config, "model_type", None) == "kimi_vl":
             model_config.text_config.topk_method = "greedy"
@@ -247,7 +258,10 @@ class FSDPEngine(BaseEngine):
             module.to(torch_dtype)
 
             if config.model.get("enable_gradient_checkpointing", False):
-                module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                if type(module) == DualHeadTokenClassificationModel:
+                    module.base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                else:
+                    module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
         if self._is_lora:
             print("Applying LoRA to the module")
@@ -449,13 +463,23 @@ class FSDPEngine(BaseEngine):
                     **multi_modal_inputs,
                     use_cache=False,
                 )  # prevent model thinks we are generating
+                print(type(preds))
 
-                if hasattr(self.module, "v_head"):
-                    # For trl.AutoModelForCausalLMWithValueHead
-                    preds_rmpad = preds[2].squeeze(0).unsqueeze(-1)
+                if isinstance(preds, DualHeadTokenClassifierOutput):
+                    print("preds is DualHeadTokenClassifierOutput")
+                    preds_rmpad = preds.logits.squeeze(0)
+                    preds_rmpad2 = preds.logits_head2.squeeze(0)
                 else:
-                    preds_rmpad = preds.logits
-                    preds_rmpad = preds_rmpad.squeeze(0)  # (total_nnz)
+                    if hasattr(self.module, "v_head"):
+                        print("using v_head")
+                        # For trl.AutoModelForCausalLMWithValueHead
+                        preds_rmpad = preds[2].squeeze(0).unsqueeze(-1)
+                    else:
+                        print("not using v_head")
+                        preds_rmpad = preds.logits
+                        preds_rmpad = preds_rmpad.squeeze(0)  # (total_nnz)
+                    preds_rmpad2 = None
+                    
 
                 # gather output if sp > 1
                 if self.ulysses_sequence_parallel_size > 1:
@@ -463,8 +487,18 @@ class FSDPEngine(BaseEngine):
                         preds_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
                     )
 
+                    if preds_rmpad2 is not None:
+                        preds_rmpad2 = gather_outputs_and_unpad(
+                            preds_rmpad2, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                        )
+
                 # pad it back
                 preds = pad_input(preds_rmpad, indices=indices, batch=batch, seqlen=seqlen).squeeze(-1)
+                preds2 = None
+                if preds_rmpad2 is not None:
+                    print("preds_rmpad2 is not None")
+                    preds2 = pad_input(preds_rmpad2, indices=indices, batch=batch, seqlen=seqlen).squeeze(-1)
+
             else:
                 preds = self.module(
                     input_ids=input_ids,
@@ -477,7 +511,14 @@ class FSDPEngine(BaseEngine):
                     # For trl.AutoModelForCausalLMWithValueHead
                     preds = preds[2]
                 else:
+                    preds2 = None
+                    if hasattr(preds, "logits_head2"):
+                        preds2 = preds.logits_head2
                     preds = preds.logits
+            
+            if preds2 is not None:
+                print("preds2 is not None")
+                preds = Preds(preds=preds, preds2=preds2)
 
             return preds
 
@@ -516,6 +557,7 @@ class FSDPEngine(BaseEngine):
             # split using dynamic bsz
             max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
             micro_batches, indices = rearrange_micro_batches(batch=batch, max_token_len=max_token_len)
+            print("indices: ", indices)
         else:
             micro_batches = batch.split(micro_batch_size)
 
@@ -527,20 +569,35 @@ class FSDPEngine(BaseEngine):
             with torch.no_grad():
                 # micro_batch_preds would be a dict[str, torch.Tensor]
                 preds = self._forward_micro_batch(micro_batch)
-                _, outputs = post_fn(micro_batch, preds)
-                assert isinstance(outputs, dict)
+                if type(preds) == Preds:
+                    print("inside infer_batch, type(preds) == Preds")
+                    preds2 = preds.preds2
+                    preds = preds.preds
+                    assert preds2 is not None
+
+                    _, outputs = post_fn(micro_batch, preds)
+                    _, outputs2 = post_fn(micro_batch, preds2)
+                    outputs2 = {k + "/2": v for k, v in outputs2.items()}
+                    outputs = {
+                        **outputs,
+                        **outputs2,
+                    }
+                else:
+                    _, outputs = post_fn(micro_batch, preds)
+                    assert isinstance(outputs, dict)
 
             # append micro batch preds to dict[str, List[torch.Tensor]]
             append_to_dict(preds_list, outputs)
 
         # reorganize mini batch preds from
         # dict[str, List[torch.Tensor]] to dict[str, torch.Tensor]
+        indices_og = indices
         mini_batch_preds = {}
         for key, t_list in preds_list.items():
             t_concat = torch.concat(t_list, dim=0)
 
             if use_dynamic_bsz:
-                indices = list(itertools.chain.from_iterable(indices))
+                indices = list(itertools.chain.from_iterable(indices_og))
                 assert len(indices) == t_concat.size(0), f"{len(indices)} vs. {t_concat.size()}"
                 revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
                 t_concat = t_concat[revert_indices]
@@ -568,6 +625,12 @@ class FSDPEngine(BaseEngine):
         # split batch into micro_batches
         mini_batch = data
         select_keys = ["input_ids", "responses", "response_mask", "attention_mask", "position_ids"]
+        if "target_levels" in mini_batch.keys():
+            select_keys.append("target_levels")
+        if "weights" in mini_batch.keys():
+            select_keys.append("weights")
+        for key in mini_batch.keys():
+            if key.endswith("_delta"): select_keys.append(key)
         if "multi_modal_inputs" in mini_batch:
             non_tensor_select_keys = ["multi_modal_inputs"]
             num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
@@ -580,13 +643,34 @@ class FSDPEngine(BaseEngine):
 
         mini_batch_metrics = {}
         for micro_batch in micro_batches:
+            # print micro_batch size
+            print(type(micro_batch))
+            print("micro_batch size: ", micro_batch.shape)
+
             # Support all devices
             micro_batch = micro_batch.to(get_device_id())
             if isinstance(micro_batch, DataProto):
                 micro_batch = {**micro_batch.batch, **micro_batch.non_tensor_batch}
 
             preds = self._forward_micro_batch(micro_batch)
+            print(type(preds))
+            preds2 = None
+            if type(preds) == Preds:
+                preds2 = preds.preds2
+                preds = preds.preds
+                print("inside train_batch, type(preds) == Preds")
+                print("preds.shape: ", preds.shape)
+                print("preds2.shape: ", preds2.shape)
+
             loss, micro_batch_metrics = loss_fn(micro_batch, preds)
+            if preds2 is not None:
+                print("computing loss for second head")
+                loss2, micro_batch_metrics2 = loss_fn(micro_batch, preds2, second_head=True)
+                loss += self.config.model.loss_fn2_weight * loss2
+                append_to_dict(micro_batch_metrics, micro_batch_metrics2)
+
+                micro_batch_metrics.update(micro_batch_metrics2)
+    
             append_to_dict(mini_batch_metrics, micro_batch_metrics)
             loss.backward()
 

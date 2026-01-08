@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from omegaconf import MISSING
 
@@ -167,6 +167,7 @@ class FSDPCriticConfig(CriticConfig):
         forward_micro_batch_size_per_gpu (int): Forward-only batch size during inference (per GPU).
         ulysses_sequence_parallel_size (int): Sequence parallelism size for Ulysses-style model parallelism.
         grad_clip (float): Gradient clipping for critic updates.
+        loss (Optional[dict]): Optional loss configuration dictionary (e.g., {"tau": 0.1}).
     """
 
     _mutable_fields = CriticConfig._mutable_fields | {
@@ -179,6 +180,8 @@ class FSDPCriticConfig(CriticConfig):
     forward_micro_batch_size_per_gpu: int = 1
     ulysses_sequence_parallel_size: int = 1
     grad_clip: float = 1.0
+    loss: Optional[dict] = None
+    clip_range: float = 0.5
 
     def __post_init__(self):
         """Validate FSDP critic configuration parameters."""
@@ -229,3 +232,7 @@ class FSDPCriticModelCfg(BaseModelConfig):
     lora_rank: int = 0
     lora_alpha: int = 16
     target_modules: str | list[str] = "all-linear"
+    style: str = "value_head"
+    num_labels: int = 1
+    num_heads: int = 1
+    loss_fn2_weight: float = 1.0

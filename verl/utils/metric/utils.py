@@ -45,10 +45,16 @@ def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
         {"loss": 2.0, "accuracy": 0.8, "max_reward": 8.0, "min_error": 0.05}
     """
     for key, val in metrics.items():
-        if "max" in key:
-            metrics[key] = np.max(val)
-        elif "min" in key:
-            metrics[key] = np.min(val)
-        else:
-            metrics[key] = np.mean(val)
+        try:
+            if "max" in key:
+                metrics[key] = np.max(val)
+            elif "min" in key:
+                metrics[key] = np.min(val)
+            else:
+                metrics[key] = np.mean(val)
+        except Exception as e:
+            print("ERROR in reduce_metrics: ", e)
+            print("KEY: ", key)
+            print("TYPE OF VALUE: ", val)
+            raise e
     return metrics
