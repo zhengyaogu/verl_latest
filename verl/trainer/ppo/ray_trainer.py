@@ -1210,6 +1210,9 @@ class RayPPOTrainer:
 
         if self.config.adv_predictor.get("log_level_every_problem", False):
             prompt2levels = defaultdict(list)
+        
+        prompt2times_sampled = defaultdict(int)
+
 
 
         # record the proportion of each abs adv level for critic training
@@ -1428,6 +1431,13 @@ class RayPPOTrainer:
                                 print(batch.non_tensor_batch["uid"] == adv_predictor_batch.non_tensor_batch["uid"])
                                 print((batch.non_tensor_batch["uid"] == adv_predictor_batch.non_tensor_batch["uid"]).sum())
                                 assert np.all(batch.non_tensor_batch["uid"] == adv_predictor_batch.non_tensor_batch["uid"]), "batch uid and adv_predictor_batch uid should be the same, got {} and {} instead".format(batch.non_tensor_batch["uid"], adv_predictor_batch.non_tensor_batch["uid"])
+
+                                id2index = dict()
+                                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                                    id2index[uid] = batch.non_tensor_batch["index"][i]
+                                    
+                                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                                    prompt2times_sampled[id2index[uid]] += 1
                                 
                                 logger.log_hist(
                                     data={
@@ -1487,9 +1497,6 @@ class RayPPOTrainer:
                                 difficulty_dict = torch.bincount(batch.batch["difficulty"].int())[1:]
                                 difficulty_dict = {"adv_predictor/difficulty/{}".format(diff_level+1): count.item() for diff_level, count in enumerate(difficulty_dict)}
                                 logger.log(data=difficulty_dict, step=self.global_steps)
-
-                                print("STEP: ", self.global_steps)
-                                print("BATCH SIZE: ", len(batch))
 
                                 batch_keys = list(set(adv_predictor_batch.batch.keys()) - set(["values"]))
                                 non_tensor_batch_keys = list(adv_predictor_batch.non_tensor_batch.keys())
@@ -1892,10 +1899,6 @@ class RayPPOTrainer:
                         print("batch.non_tensor_batch.keys(): ", batch.non_tensor_batch.keys())
                         id2adv = compute_abs_adv_by_group(batch)
 
-                        id2index = dict()
-                        for i, uid in enumerate(batch.non_tensor_batch["uid"]):
-                            id2index[uid] = batch.non_tensor_batch["index"][i]
-
                         id2_num_correct, id2_adv_level = num_correct_answers_by_group(batch, self.config.actor_rollout_ref.rollout.n)
                         num_effective = sum([(v > 0 and v < self.config.actor_rollout_ref.rollout.n) for v in id2_num_correct.values()])
 
@@ -2051,8 +2054,7 @@ class RayPPOTrainer:
                                 actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                                 metrics.update(actor_output_metrics)
 
-                            if (self.config.adv_predictor.target == "perf_diff" and
-                                self.config.adv_predictor.dormant_steps <= self.global_steps):
+                            if self.config.adv_predictor.target == "perf_diff":
                                 with marked_timer("curator_total", timing_raw):
                                     with marked_timer("compute_new_log_prob", timing_raw, color="pink"):
                                         new_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
@@ -2074,7 +2076,9 @@ class RayPPOTrainer:
                                         seq_lengths = torch.sum(response_mask, dim=-1).clamp(min=1)
                                         log_importance_ratio = torch.sum(log_importance_ratio * response_mask, dim=-1) / seq_lengths
                                         importance_ratio = torch.exp(log_importance_ratio)
-                                        importance_ratio = torch.clamp(importance_ratio, 10., 0.1)
+                                        # importance_ratio_cliprange = self.config.adv_predictor.get("importance_ratio_cliprange", 0.5)
+                                        # cliprange_low = max(1 - importance_ratio_cliprange, 0.1)
+                                        importance_ratio = torch.clamp(importance_ratio, 0.1, 10)
                                         perf_diff_unit = advantages * importance_ratio.unsqueeze(-1)
                                         batch.union(DataProto.from_single_dict({
                                             "perf_diff_unit": perf_diff_unit.detach().clone()
@@ -2084,6 +2088,32 @@ class RayPPOTrainer:
                                         perf_diff = []
                                         for i, uid in enumerate(adv_predictor_batch.non_tensor_batch["uid"]):
                                             perf_diff.append(id2perf_diff[uid])
+                                        perf_diff = torch.tensor(perf_diff)
+                                        
+                                        if self.config.adv_predictor.get("use_sampling_prior", False):
+                                            inv_sampling_prior = []
+                                            for i, uid in enumerate(adv_predictor_batch.non_tensor_batch["uid"]):
+                                                inv_sampling_prior.append(prompt2times_sampled[id2index[uid]])
+                                            k = len(inv_sampling_prior)
+                                            inv_sampling_prior = torch.tensor(inv_sampling_prior)
+                                            inv_sampling_prior = inv_sampling_prior / inv_sampling_prior.sum() * k
+                                            inv_sampling_prior = 1 / inv_sampling_prior
+                                            inv_sampling_prior = torch.clamp(inv_sampling_prior, 0.1, 10)
+                                            perf_diff = perf_diff * inv_sampling_prior
+                                    
+                                    logger.log_hist(
+                                        # log importance ratio distribution
+                                        data={
+                                            "adv_predictor/importance_ratio": importance_ratio
+                                        },
+                                        step=self.global_steps
+                                    )
+                                    logger.log_hist(
+                                        data={
+                                            "adv_predictor/perf_diff": perf_diff
+                                        },
+                                        step=self.global_steps
+                                    )
 
                             
                             critic_infos = DataProto.from_single_dict({
@@ -2094,9 +2124,7 @@ class RayPPOTrainer:
                                 "target_levels_delta": torch.tensor(target_levels_delta),
                                 "target_probs_delta": torch.tensor(target_probs_delta),
                             })
-                            if (self.config.adv_predictor.get("target", "abs_adv") == "perf_diff" and
-                                self.config.adv_predictor.dormant_steps <= self.global_steps):
-                                perf_diff = torch.tensor(perf_diff)
+                            if self.config.adv_predictor.get("target", "abs_adv") == "perf_diff":
                                 critic_infos = critic_infos.union(DataProto.from_single_dict({
                                     "perf_diff": perf_diff,
                                 }))
