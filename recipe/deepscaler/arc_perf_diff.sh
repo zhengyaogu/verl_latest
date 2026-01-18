@@ -157,9 +157,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.sampler=uniform \
     +adv_predictor.temperature_annealing=false \
     +adv_predictor.temperature=1.0 \
-    +adv_predictor.top_p_annealing=true \
+    +adv_predictor.top_p_annealing=false \
     +adv_predictor.top_p=0.9 \
-    +adv_predictor.final_top_p=0.7 \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
@@ -186,6 +185,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=disable \
+    trainer.resume_mode=auto \
     trainer.log_val_generations=10 \
     $@

@@ -1249,6 +1249,10 @@ class RayPPOTrainer:
                         [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                     )
 
+                    id2index = dict()
+                    for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                        id2index[uid] = batch.non_tensor_batch["index"][i]
+
                     # raw_prompts = batch.non_tensor_batch["raw_prompt"]
                     # difficulties = batch.batch["difficulty"]
 
@@ -1311,12 +1315,12 @@ class RayPPOTrainer:
                                             ).indices.squeeze(-1)
                                             sampled_idx = sampled_idx[torch.randperm(sampled_idx.shape[0])]
                                         elif self.config.adv_predictor.sampler == "stochastic_topk":
-                                            error_magnitude = ema_vf_loss_mean if ema_vf_loss_mean is not None else float("inf")
-                                            print("ERROR MAGNITUDE: ", error_magnitude)
-                                            sampled_idx, _ = stochastic_topk(
-                                                adv_predictor_batch.batch["values"].squeeze(-1),
-                                                error_magnitude,
-                                                self.config.adv_predictor.num_samples
+                                            sample_weights = 1-torch.abs(adv_predictor_batch.batch["values"].squeeze(-1) - 0.5)
+                                            sampled_idx = torch.topk(
+                                                sample_weights,
+                                                self.config.adv_predictor.num_samples, 
+                                                dim=0,
+                                                sorted=False
                                             )
                                             sampled_idx = sampled_idx[torch.randperm(sampled_idx.shape[0])]
                                         elif self.config.adv_predictor.sampler == "osmd":
@@ -1419,9 +1423,6 @@ class RayPPOTrainer:
                                                 sampled_idx = torch.arange(len(new_adv))[sample_mask]
                                                 prev_adv_predictor_batch = prev_adv_predictor_batch.select_idxs(selected_old_idx)
                                                 print("prev_adv_predictor_batch.batch.keys(): ", prev_adv_predictor_batch.batch.keys())
-                                        
-                                if self.config.adv_predictor.sampler != "metropolis":
-                                    adv_predictor_batch.batch["sampled_probs"] = sample_weights
                                     
                                 # curr_heatmap = np.zeros_like(adv_predictor_batch.non_tensor_batch["uid"], dtype=np.float32)
                                 # heatmap_sort_idx = np.argsort(adv_predictor_batch.batch["difficulty"])
@@ -1432,9 +1433,9 @@ class RayPPOTrainer:
                                 print((batch.non_tensor_batch["uid"] == adv_predictor_batch.non_tensor_batch["uid"]).sum())
                                 assert np.all(batch.non_tensor_batch["uid"] == adv_predictor_batch.non_tensor_batch["uid"]), "batch uid and adv_predictor_batch uid should be the same, got {} and {} instead".format(batch.non_tensor_batch["uid"], adv_predictor_batch.non_tensor_batch["uid"])
 
-                                id2index = dict()
-                                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
-                                    id2index[uid] = batch.non_tensor_batch["index"][i]
+                                if self.config.adv_predictor.sampler != "metropolis":
+                                    # here sample_weights should be sliced like the batch and adv_predictor_batch
+                                    adv_predictor_batch.batch["sampled_probs"] = sample_weights[sampled_idx]
                                     
                                 for i, uid in enumerate(batch.non_tensor_batch["uid"]):
                                     prompt2times_sampled[id2index[uid]] += 1
@@ -2091,29 +2092,31 @@ class RayPPOTrainer:
                                         perf_diff = torch.tensor(perf_diff)
                                         
                                         if self.config.adv_predictor.get("use_sampling_prior", False):
-                                            inv_sampling_prior = []
-                                            for i, uid in enumerate(adv_predictor_batch.non_tensor_batch["uid"]):
-                                                inv_sampling_prior.append(prompt2times_sampled[id2index[uid]])
-                                            k = len(inv_sampling_prior)
-                                            inv_sampling_prior = torch.tensor(inv_sampling_prior)
-                                            inv_sampling_prior = inv_sampling_prior / inv_sampling_prior.sum() * k
-                                            inv_sampling_prior = 1 / inv_sampling_prior
-                                            inv_sampling_prior = torch.clamp(inv_sampling_prior, 0.1, 10)
+                                            # inv_sampling_prior = []
+                                            # for i, uid in enumerate(adv_predictor_batch.non_tensor_batch["uid"]):
+                                            #     inv_sampling_prior.append(prompt2times_sampled[id2index[uid]])
+                                            # k = len(inv_sampling_prior)
+                                            # inv_sampling_prior = torch.tensor(inv_sampling_prior)
+                                            # inv_sampling_prior = inv_sampling_prior / inv_sampling_prior.sum() * k
+                                            # inv_sampling_prior = 1 / inv_sampling_prior
+                                            # inv_sampling_prior = torch.clamp(inv_sampling_prior, 0.1, 10)
+                                            sampled_probs = torch.clamp(adv_predictor_batch.batch["sampled_probs"], 1e-6, 1)
+                                            inv_sampling_prior = 1 / adv_predictor_batch.batch["sampled_probs"]
                                             perf_diff = perf_diff * inv_sampling_prior
                                     
-                                    logger.log_hist(
-                                        # log importance ratio distribution
-                                        data={
-                                            "adv_predictor/importance_ratio": importance_ratio
-                                        },
-                                        step=self.global_steps
-                                    )
-                                    logger.log_hist(
-                                        data={
-                                            "adv_predictor/perf_diff": perf_diff
-                                        },
-                                        step=self.global_steps
-                                    )
+                                logger.log_hist(
+                                    # log importance ratio distribution
+                                    data={
+                                        "adv_predictor/importance_ratio": importance_ratio
+                                    },
+                                    step=self.global_steps
+                                )
+                                logger.log_hist(
+                                    data={
+                                        "adv_predictor/perf_diff": perf_diff
+                                    },
+                                    step=self.global_steps
+                                )
 
                             
                             critic_infos = DataProto.from_single_dict({
