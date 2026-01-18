@@ -158,11 +158,12 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.temperature_annealing=false \
     +adv_predictor.temperature=1.0 \
     +adv_predictor.top_p_annealing=false \
-    +adv_predictor.top_p=0.9 \
+    +adv_predictor.top_p=0.8 \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
     +adv_predictor.target=perf_diff \
+    +adv_predictor.use_sampling_prior=true \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \

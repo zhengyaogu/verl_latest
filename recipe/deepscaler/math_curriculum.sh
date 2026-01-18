@@ -26,6 +26,7 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen3-1.7B
+CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -38,7 +39,7 @@ first_time_dataset_prep=true # prepare dataset
 test_freq=10
 save_freq=20
 total_epochs=100
-total_training_steps=1000
+total_training_steps=2000
 val_before_train=true
 
 use_kl_in_reward=false
@@ -66,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_curriculum"
+exp_name="math_curriculum"
 
 # Sampling params at rollouts
 temperature=1.0
