@@ -185,6 +185,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=disable \
+    trainer.resume_mode=auto \
     trainer.log_val_generations=10 \
     $@

@@ -25,7 +25,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen3-1.7B
+MODEL_PATH=Qwen/Qwen2.5-3B
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
@@ -38,9 +38,9 @@ first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
 save_freq=20
-total_epochs=10000
-total_training_steps=2000
-val_before_train=true
+total_epochs=100
+total_training_steps=1000
+val_before_train=false
 
 use_kl_in_reward=false
 kl_coef=0.0
@@ -50,12 +50,12 @@ kl_loss_coef=0.0
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
 candidate_batch_size=2048 # how many to sample from the dataloader
-train_batch_size=256 # how many chosen by the critic
-ppo_mini_batch_size=64 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
+train_batch_size=16 # how many chosen by the critic
+ppo_mini_batch_size=8 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
-critic_train_batch_size=256 # number of samples from the replay buffer
+critic_train_batch_size=16 # number of samples from the replay buffer
 replay_buffer_size=2
 
 max_prompt_length=$((1024 * 1))
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="math_curriculum"
+exp_name="zebra_topk"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -88,8 +88,8 @@ entropy_checkpointing=true # This enables entropy recomputation specifically for
 sampling_method=greedy
 
 WORKING_DIR=/workspace/mnt/verl_latest
-train_files=${WORKING_DIR}/data/math/math_train.parquet
-test_files=${WORKING_DIR}/data/math/math_test.parquet
+train_files=${WORKING_DIR}/data/combined/train_zebra.parquet
+test_files=${WORKING_DIR}/data/combined/test_zebra.parquet
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \
@@ -149,16 +149,20 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
-    +adv_predictor.use_difficulty_curriculum=true \
-    +adv_predictor.enable=false \
+    +adv_predictor.enable=true \
+    +adv_predictor.dormant_steps=70 \
+    +adv_predictor.critic_warmup=5 \
+    +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.temperature=1.0 \
+    +adv_predictor.sampler=stochastic_topk \
+    +adv_predictor.num_samples=${train_batch_size} \
+    +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
+    +adv_predictor.target=abs_adv \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
     +critic.model.num_heads=1 \
-    +critic.clip_range=0.2 \
     critic.model.use_remove_padding=True \
     critic.model.path=${CRITIC_MODEL_PATH} \
     critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
@@ -175,6 +179,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

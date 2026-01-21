@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_contrastive_test"
+exp_name="zebra_topk"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -155,10 +155,10 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=stochastic_topk \
-    +adv_predictor.temperature=0.1\
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
+    +adv_predictor.target=abs_adv \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
