@@ -1321,7 +1321,7 @@ class RayPPOTrainer:
                                                 self.config.adv_predictor.num_samples, 
                                                 dim=0,
                                                 sorted=False
-                                            )
+                                            ).indices.squeeze(-1)
                                             sampled_idx = sampled_idx[torch.randperm(sampled_idx.shape[0])]
                                         elif self.config.adv_predictor.sampler == "osmd":
                                             if self.config.adv_predictor.get("alpha_annealing", False):
@@ -2161,19 +2161,19 @@ class RayPPOTrainer:
                                         critic_output = self.critic_wg.update_critic(replay_batch)
                                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                                         
-                                if self.config.adv_predictor.sampler == "stochastic_topk":
-                                    print("EMA VF LOSS MEAN updated")
-                                    ema_coeff = self.config.adv_predictor.ema_coeff
-                                    ema_vf_loss_mean = (
-                                        critic_output_metrics["critic/vf_loss"] 
-                                        if ema_vf_loss_mean is None
-                                        else ema_vf_loss_mean * ema_coeff + critic_output_metrics["critic/vf_loss"] * (1 - ema_coeff)
-                                    )
-                                    # ema_vf_loss_var = (
-                                    #     critic_output_metrics["critic/vf_loss_var"] 
-                                    #     if ema_vf_loss_var is None 
-                                    #     else ema_vf_loss_var * ema_coeff + critic_output_metrics["critic/vf_loss_var"] * (1 - ema_coeff)
-                                    # )
+                                # if self.config.adv_predictor.sampler == "stochastic_topk":
+                                #     print("EMA VF LOSS MEAN updated")
+                                #     ema_coeff = self.config.adv_predictor.ema_coeff
+                                #     ema_vf_loss_mean = (
+                                #         critic_output_metrics["critic/vf_loss"] 
+                                #         if ema_vf_loss_mean is None
+                                #         else ema_vf_loss_mean * ema_coeff + critic_output_metrics["critic/vf_loss"] * (1 - ema_coeff)
+                                #     )
+                                #     # ema_vf_loss_var = (
+                                #     #     critic_output_metrics["critic/vf_loss_var"] 
+                                #     #     if ema_vf_loss_var is None 
+                                #     #     else ema_vf_loss_var * ema_coeff + critic_output_metrics["critic/vf_loss_var"] * (1 - ema_coeff)
+                                #     # )
 
                                 metrics.update(critic_output_metrics)
 

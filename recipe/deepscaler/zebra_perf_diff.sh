@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_perf_diff_temp_1_topp_0.9"
+exp_name="zebra_perf_diff_temp_anneal_5_2_topp_0.9"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -155,13 +155,14 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
-    +adv_predictor.temperature_annealing=false \
-    +adv_predictor.temperature=1.0 \
+    +adv_predictor.temperature_annealing=true \
+    +adv_predictor.temperature=5.0 \
+    +adv_predictor.max_temperature=2.0 \
     +adv_predictor.top_p_annealing=false \
     +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
-    +adv_predictor.ema_coeff=0.5 \
+    +adv_predictor.ema_coeff=0.2 \
     +adv_predictor.target=perf_diff \
     +adv_predictor.use_sampling_prior=true \
     critic.optim.lr=1e-6 \
@@ -185,6 +186,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=disable \
+    trainer.resume_mode=auto \
     trainer.log_val_generations=10 \
     $@

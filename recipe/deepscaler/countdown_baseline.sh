@@ -24,7 +24,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-3B
+MODEL_PATH=microsoft/Phi-4-mini-instruct
 offload=False # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -61,7 +61,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="countdown_baseline_final"
+exp_name="countdown_baseline_phi4"
 
 # Sampling params at rollouts
 temperature=1.0
