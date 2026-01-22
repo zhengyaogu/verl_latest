@@ -6,6 +6,7 @@ apt update
 
 # Install ssh
 apt install -y openssh-client
+apt-get install git-lfs
 
 # Change into the rllm directory
 cd "/workspace/mnt/verl_latest"
