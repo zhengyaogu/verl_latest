@@ -1239,7 +1239,7 @@ class RayPPOTrainer:
                 metrics = {}
                 timing_raw = {}
 
-                if not self.trainer.get("eval_only", False):                
+                if not self.config.trainer.get("eval_only", False):                
                     with marked_timer("step_total", timing_raw):
                         with marked_timer("start_profile", timing_raw):
                             self._start_profiling(
@@ -2237,7 +2237,7 @@ class RayPPOTrainer:
                                     )
 
                 # validate
-                if self.trainer.get("eval_only", False):
+                if self.configtrainer.get("eval_only", False):
                     self._load_checkpoint()
 
                 if (
