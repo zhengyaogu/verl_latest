@@ -2237,7 +2237,7 @@ class RayPPOTrainer:
                                     )
 
                 # validate
-                if self.configtrainer.get("eval_only", False):
+                if self.config.trainer.get("eval_only", False):
                     self._load_checkpoint()
 
                 if (
