@@ -50,12 +50,12 @@ kl_loss_coef=0.0
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
 candidate_batch_size=2048 # how many to sample from the dataloader
-train_batch_size=16 # how many chosen by the critic
-ppo_mini_batch_size=8 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
+train_batch_size=256 # how many chosen by the critic
+ppo_mini_batch_size=64 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
-critic_train_batch_size=16 # number of samples from the replay buffer
+critic_train_batch_size=256 # number of samples from the replay buffer
 replay_buffer_size=2
 
 max_prompt_length=$((1024 * 1))
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_topk"
+exp_name="countdown_topk"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -88,8 +88,8 @@ entropy_checkpointing=true # This enables entropy recomputation specifically for
 sampling_method=greedy
 
 WORKING_DIR=/workspace/mnt/verl_latest
-train_files=${WORKING_DIR}/data/combined/train_zebra.parquet
-test_files=${WORKING_DIR}/data/combined/test_zebra.parquet
+train_files=${WORKING_DIR}/data/combined/train_countdown.parquet
+test_files=${WORKING_DIR}/data/combined/test_countdown.parquet
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=${adv_estimator} \

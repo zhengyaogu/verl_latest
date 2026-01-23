@@ -1070,6 +1070,10 @@ class RayPPOTrainer:
                 if not os.path.isabs(global_step_folder):
                     working_dir = os.getcwd()
                     global_step_folder = os.path.join(working_dir, global_step_folder)
+        
+        if self.config.trainer.get("eval_only", False):
+            global_step_folder = os.path.join(checkpoint_folder, "global_step_{}".format(int(self.global_steps)))
+
         print(f"Load from checkpoint folder: {global_step_folder}")
         # set global step
         self.global_steps = int(global_step_folder.split("global_step_")[-1])
@@ -1091,12 +1095,13 @@ class RayPPOTrainer:
 
         # load dataloader,
         # TODO: from remote not implemented yet
-        dataloader_local_path = os.path.join(global_step_folder, "data.pt")
-        if os.path.exists(dataloader_local_path):
-            dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
-            self.train_dataloader.load_state_dict(dataloader_state_dict)
-        else:
-            print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+        if not self.config.trainer.get("eval_only", False):
+            dataloader_local_path = os.path.join(global_step_folder, "data.pt")
+            if os.path.exists(dataloader_local_path):
+                dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
+                self.train_dataloader.load_state_dict(dataloader_state_dict)
+            else:
+                print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1233,8 +1238,10 @@ class RayPPOTrainer:
             for batch_dict in self.train_dataloader:
                 metrics = {}
                 timing_raw = {}
+
+                if not self.trainer.get("eval_only", False):
                 
-                with marked_timer("step_total", timing_raw):
+                    with marked_timer("step_total", timing_raw):
                     with marked_timer("start_profile", timing_raw):
                         self._start_profiling(
                             not prev_step_profile and curr_step_profile
@@ -2231,6 +2238,9 @@ class RayPPOTrainer:
                                 )
 
                 # validate
+                if self.trainer.get("eval_only", False):
+                    self._load_checkpoint()
+
                 if (
                     self.val_reward_fn is not None
                     and self.config.trainer.test_freq > 0
