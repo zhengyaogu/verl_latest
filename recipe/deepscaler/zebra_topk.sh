@@ -50,12 +50,12 @@ kl_loss_coef=0.0
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
 candidate_batch_size=2048 # how many to sample from the dataloader
-train_batch_size=16 # how many chosen by the critic
-ppo_mini_batch_size=8 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
+train_batch_size=256 # how many chosen by the critic
+ppo_mini_batch_size=64 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
 ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
 n_resp_per_prompt=8
 
-critic_train_batch_size=16 # number of samples from the replay buffer
+critic_train_batch_size=256 # number of samples from the replay buffer
 replay_buffer_size=2
 
 max_prompt_length=$((1024 * 1))

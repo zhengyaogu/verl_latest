@@ -37,8 +37,8 @@ shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
-save_freq=20
-total_epochs=100
+save_freq=100
+total_epochs=10000
 total_training_steps=2000
 val_before_train=false
 
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_ordinal_uniform_0.95_0.7"
+exp_name="arc_topk"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -150,21 +150,19 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
     +adv_predictor.enable=true \
-    +adv_predictor.dormant_steps=70 \
+    +adv_predictor.dormant_steps=50 \
     +adv_predictor.critic_warmup=5 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
-    +adv_predictor.sampler=uniform \
-    +adv_predictor.temperature=1.0 \
-    +adv_predictor.top_p_annealing=true \
-    +adv_predictor.top_p=0.9 \
-    +adv_predictor.final_top_p=0.7 \
+    +adv_predictor.sampler=stochastic_topk \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
+    +adv_predictor.target=abs_adv \
     critic.optim.lr=1e-6 \
-    +critic.model.style=ordinal \
-    +critic.model.num_labels=8 \
+    +critic.model.style=osmd \
+    +critic.model.num_labels=1 \
+    +critic.model.num_heads=1 \
     critic.model.use_remove_padding=True \
     critic.model.path=${CRITIC_MODEL_PATH} \
     critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
