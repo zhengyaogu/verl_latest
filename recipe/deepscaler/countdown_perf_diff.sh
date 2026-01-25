@@ -26,20 +26,20 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen2.5-3B
-CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
+CRITIC_MODEL_PATH=Qwen/Qwen3-4B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
-gpu_memory_utilization=0.85
+gpu_memory_utilization=0.7
 reward_manager=sec
 adv_estimator=grpo
 shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
-save_freq=20
-total_epochs=100
-total_training_steps=1000
+save_freq=50
+total_epochs=10000
+total_training_steps=300
 val_before_train=true
 
 use_kl_in_reward=false
