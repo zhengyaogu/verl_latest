@@ -26,11 +26,11 @@ adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
 MODEL_PATH=Qwen/Qwen2.5-3B
-CRITIC_MODEL_PATH=Qwen/Qwen3-1.7B
+CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
-gpu_memory_utilization=0.7
+gpu_memory_utilization=0.85
 reward_manager=sec
 adv_estimator=grpo
 shuffle_dataset=true
@@ -39,7 +39,7 @@ first_time_dataset_prep=true # prepare dataset
 test_freq=10
 save_freq=50
 total_epochs=10000
-total_training_steps=300
+total_training_steps=600
 val_before_train=true
 
 use_kl_in_reward=false
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="countdown_perf_diff_temp_1_topp_0.9"
+exp_name="countdown_perf_diff_temp_2_final_temp_5_topp_0.9_global_local"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -81,7 +81,7 @@ use_dynamic_bsz=true
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 6))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) * 8))
 offload=true
-gen_tp=1
+gen_tp=2
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
 #rollout method
@@ -155,20 +155,22 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
-    +adv_predictor.temperature_annealing=false \
-    +adv_predictor.temperature=1.0 \
+    +adv_predictor.temperature_annealing=true \
+    +adv_predictor.temperature=2.0 \
+    +adv_predictor.final_temperature=5.0 \
     +adv_predictor.top_p_annealing=false \
-    +adv_predictor.top_p=0.8 \
+    +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
     +adv_predictor.target=perf_diff \
-    +adv_predictor.use_sampling_prior=true \
+    +adv_predictor.use_sampling_prior=false \
+    +adv_predictor.perf_diff_amplifier=1000.0 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
     +critic.model.num_heads=1 \
-    +critic.clip_range=0.2 \
+    +critic.clip_range=0.5 \
     critic.model.use_remove_padding=True \
     critic.model.path=${CRITIC_MODEL_PATH} \
     critic.ppo_micro_batch_size_per_gpu=${ppo_micro_batch_size_per_gpu} \
@@ -185,6 +187,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=resume_path \
+    trainer.resume_from_path=/workspace/mnt/verl_latest/recipe/deepscaler/checkpoints/DISC/countdown_perf_diff_temp_1_topp_0.9_amplifier_1000/global_step_50 \
     trainer.log_val_generations=10 \
     $@

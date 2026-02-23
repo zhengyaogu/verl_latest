@@ -25,7 +25,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-3B
+MODEL_PATH=meta-llama/Llama-3.2-3B-Instruct
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
@@ -39,7 +39,7 @@ first_time_dataset_prep=true # prepare dataset
 test_freq=10
 save_freq=20
 total_epochs=100
-total_training_steps=1000
+total_training_steps=500
 val_before_train=true
 
 use_kl_in_reward=false
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="arc_perf_diff_temp_1_topp_anneal_0.9_0.7"
+exp_name="arc_perf_diff_temp_1_topp_0.9_amplifier_1000"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -163,7 +163,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
     +adv_predictor.target=perf_diff \
-    +adv_predictor.use_sampling_prior=true \
+    +adv_predictor.use_sampling_prior=false \
+    +adv_predictor.perf_diff_amplifier=1000.0 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
@@ -185,6 +186,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

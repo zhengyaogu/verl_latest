@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="math_contrastive_cliprange_0.2_topp_0.9"
+exp_name="math_contrastive_cliprange_0.2_topp_0.9_amplifier_1000"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -163,7 +163,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.5 \
     +adv_predictor.target=perf_diff \
-    +adv_predictor.use_sampling_prior=true \
+    +adv_predictor.use_sampling_prior=false \
+    +adv_predictor.perf_diff_amplifier=1000.0 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
