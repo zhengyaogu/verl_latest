@@ -37,9 +37,9 @@ shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
-save_freq=20
+save_freq=50
 total_epochs=100
-total_training_steps=1000
+total_training_steps=600
 val_before_train=true
 
 use_kl_in_reward=false
@@ -164,7 +164,11 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.train_critic_only=false \
     +adv_predictor.ema_coeff=0.2 \
     +adv_predictor.target=perf_diff \
-    +adv_predictor.use_sampling_prior=true \
+    +adv_predictor.use_sampling_prior=false \
+    +adv_predictor.perf_diff_amplifier=1000.0 \
+    +adv_predictor.target_importance_ratio_cliprange=3.0 \
+    +adv_predictor.perf_diff_unit_cliprange_lo=-0.5 \
+    +adv_predictor.perf_diff_unit_cliprange_hi=10.0 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
@@ -186,6 +190,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

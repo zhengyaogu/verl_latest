@@ -25,7 +25,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=meta-llama/Meta-Llama-3.2-3B-Instruct
+MODEL_PATH=meta-llama/Llama-3.2-3B-Instruct
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
@@ -40,7 +40,7 @@ test_freq=10
 save_freq=50
 total_epochs=10000
 total_training_steps=500
-val_before_train=false
+val_before_train=true
 
 use_kl_in_reward=false
 kl_coef=0.0

@@ -658,9 +658,6 @@ class FSDPEngine(BaseEngine):
             if type(preds) == Preds:
                 preds2 = preds.preds2
                 preds = preds.preds
-                print("inside train_batch, type(preds) == Preds")
-                print("preds.shape: ", preds.shape)
-                print("preds2.shape: ", preds2.shape)
 
             loss, micro_batch_metrics = loss_fn(micro_batch, preds)
             if preds2 is not None:

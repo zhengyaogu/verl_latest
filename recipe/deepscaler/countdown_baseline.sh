@@ -61,7 +61,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="countdown_baseline_phi4"
+exp_name="countdown_baseline"
 
 # Sampling params at rollouts
 temperature=1.0

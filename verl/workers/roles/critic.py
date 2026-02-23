@@ -349,20 +349,26 @@ class AdvPredictorWorker(CriticWorker):
         batch: DataProto, vpreds: dict[str, torch.Tensor],
         second_head: bool = False
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        probs, _ = self._post_fn_osmd(batch, vpreds)
-        sampled_probs = batch["sampled_probs"].unsqueeze(-1)
+        probs, _ = self._post_fn_osmd(batch, vpreds) # probs here is log_softmax of the predicted logits
+        #sampled_probs = F.log_softmax(batch["sampled_logits"], dim=0).unsqueeze(-1)
+        sampled_probs = F.normalize(batch["sampled_probs"], p=1, dim=0).unsqueeze(-1)
         print("inside osmd_loss_fn", probs.shape, sampled_probs.shape)
-        ratio = probs / sampled_probs
+        print("probs: ", probs)
+        print("sampled_probs: ", sampled_probs)
+        #ratio = torch.exp(probs - sampled_probs)
+        ratio = torch.exp(probs) / sampled_probs # probs are computed using log_softmax, so we need to exp them to get the probabilities
+        print("ratio: ", ratio)
         if "perf_diff" in batch.keys():
             advantages = batch["perf_diff"].unsqueeze(-1)
         else:
             advantages = batch["adv_level"].unsqueeze(-1)
         policy_losses1 = -advantages * ratio
         clip_range = self.config.get("clip_range", 0.5)
-        print("clip_range: ", clip_range)
         policy_losses2 = -advantages * torch.clamp(
             ratio, 1 - clip_range, 1 + clip_range
         )
+        print("policy_losses2: ", policy_losses2)
+
         clip_pg_losses = torch.maximum(
             policy_losses1, policy_losses2
         )
@@ -378,6 +384,10 @@ class AdvPredictorWorker(CriticWorker):
 
         micro_batch_metrics = {
             "critic/osmd_loss": loss.detach().item(),
+            "critic/ratio/mean": ratio.mean().detach().item(),
+            "critic/ratio/std": ratio.std().detach().item(),
+            "critic/ratio/min": ratio.min().detach().item(),
+            "critic/ratio/max": ratio.max().detach().item(),
         }
         return loss, micro_batch_metrics
     
@@ -498,6 +508,7 @@ class AdvPredictorWorker(CriticWorker):
                     "target_probs_delta",
                     "target_levels_delta",
                     "sampled_probs",
+                    "sampled_logits",
                     "adv_level",
                 ]
                 batch = data.select(batch_keys=select_keys).batch
