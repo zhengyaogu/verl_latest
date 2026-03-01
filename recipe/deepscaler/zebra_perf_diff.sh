@@ -25,7 +25,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-3B
+MODEL_PATH=Qwen/Qwen2.5-7B
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="zebra_perf_diff_temp_anneal_5_2_topp_0.9"
+exp_name="zebra_7B_temp_1_topp_0.9_window_avg_10"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -150,14 +150,13 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
     +adv_predictor.enable=true \
-    +adv_predictor.dormant_steps=50 \
+    +adv_predictor.dormant_steps=20 \
     +adv_predictor.critic_warmup=5 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
-    +adv_predictor.temperature_annealing=true \
-    +adv_predictor.temperature=5.0 \
-    +adv_predictor.max_temperature=2.0 \
+    +adv_predictor.temperature_annealing=false \
+    +adv_predictor.temperature=1.0 \
     +adv_predictor.top_p_annealing=false \
     +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
@@ -167,8 +166,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.use_sampling_prior=false \
     +adv_predictor.perf_diff_amplifier=1000.0 \
     +adv_predictor.target_importance_ratio_cliprange=3.0 \
-    +adv_predictor.perf_diff_unit_cliprange_lo=-0.5 \
-    +adv_predictor.perf_diff_unit_cliprange_hi=10.0 \
+    +adv_predictor.use_window_avg_target=true \
+    +adv_predictor.history_length=10 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \

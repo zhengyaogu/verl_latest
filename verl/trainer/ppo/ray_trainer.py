@@ -1205,6 +1205,8 @@ class RayPPOTrainer:
 
         # maintain a global index for observed levels, used to train the second head
         global_level_index = defaultdict(list)
+        # maintain a global index for observed perf_diff values, used when target == "perf_diff"
+        global_perf_diff_index = defaultdict(list)
 
         difficulty2avg_adv = defaultdict(int)
 
@@ -2112,9 +2114,18 @@ class RayPPOTrainer:
                                             cliprange_hi=perf_diff_unit_cliprange_hi
                                         )
                                         perf_diff = []
+                                        perf_diff_window_avg = []
                                         for i, uid in enumerate(adv_predictor_batch.non_tensor_batch["uid"]):
                                             perf_diff.append(id2perf_diff[uid])
+                                            global_perf_diff_index[id2index[uid]].append(id2perf_diff[uid])
+                                            if len(global_perf_diff_index[id2index[uid]]) > history_length:
+                                                global_perf_diff_index[id2index[uid]].pop(0)
+                                            perf_diff_window_avg.append(sum(global_perf_diff_index[id2index[uid]]) / len(global_perf_diff_index[id2index[uid]]))
                                         perf_diff = torch.tensor(perf_diff)
+                                        perf_diff_window_avg = torch.tensor(perf_diff_window_avg)
+
+                                        if self.config.adv_predictor.get("use_window_avg_target", False):
+                                            perf_diff = perf_diff_window_avg
                                         
                                         if self.config.adv_predictor.get("use_sampling_prior", False):
                                             # inv_sampling_prior = []
@@ -2149,6 +2160,9 @@ class RayPPOTrainer:
                                 )
 
                                 log_perf_diff_unit = verl_F.masked_mean(batch.batch["perf_diff_unit"], batch.batch["response_mask"], axis=-1)
+                                perf_diff_unit_cliprange_lo = self.config.adv_predictor.get("perf_diff_unit_cliprange_lo", float('-inf'))
+                                perf_diff_unit_cliprange_hi = self.config.adv_predictor.get("perf_diff_unit_cliprange_hi", float('inf'))
+                                log_perf_diff_unit = torch.clamp(log_perf_diff_unit, perf_diff_unit_cliprange_lo, perf_diff_unit_cliprange_hi)
                                 logger.log_hist(
                                     data={
                                         "adv_predictor/perf_diff_unit": log_perf_diff_unit
