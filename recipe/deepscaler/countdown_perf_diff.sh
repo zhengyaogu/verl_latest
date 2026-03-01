@@ -25,7 +25,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-3B
+MODEL_PATH=Qwen/Qwen2.5-7B
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
@@ -67,7 +67,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="countdown_perf_diff_temp_2_final_temp_5_topp_0.9_global_local"
+exp_name="countdown_perf_diff_temp_1_7B"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -155,9 +155,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
-    +adv_predictor.temperature_annealing=true \
-    +adv_predictor.temperature=2.0 \
-    +adv_predictor.final_temperature=5.0 \
+    +adv_predictor.temperature_annealing=false \
+    +adv_predictor.temperature=1.0 \
     +adv_predictor.top_p_annealing=false \
     +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
