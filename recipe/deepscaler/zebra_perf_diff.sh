@@ -155,8 +155,9 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
-    +adv_predictor.temperature_annealing=false \
-    +adv_predictor.temperature=1.0 \
+    +adv_predictor.temperature_annealing=True \
+    +adv_predictor.temperature=5.0 \
+    +adv_predictor.max_temperature=2.0 \
     +adv_predictor.top_p_annealing=false \
     +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
@@ -164,10 +165,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.ema_coeff=0.2 \
     +adv_predictor.target=perf_diff \
     +adv_predictor.use_sampling_prior=false \
-    +adv_predictor.perf_diff_amplifier=1000.0 \
-    +adv_predictor.target_importance_ratio_cliprange=3.0 \
-    +adv_predictor.use_window_avg_target=true \
-    +adv_predictor.history_length=10 \
+    +adv_predictor.perf_diff_amplifier=100.0 \
+    +adv_predictor.use_window_avg_target=false \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
