@@ -166,7 +166,8 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.target=perf_diff \
     +adv_predictor.use_sampling_prior=false \
     +adv_predictor.perf_diff_amplifier=100.0 \
-    +adv_predictor.use_window_avg_target=false \
+    +adv_predictor.use_window_avg_target=true \
+    +adv_predictor.history_length=10 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
