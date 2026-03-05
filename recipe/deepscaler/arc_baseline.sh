@@ -24,7 +24,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=microsoft/Phi-4-mini-instruct
+MODEL_PATH=Qwen/Qwen2.5-7B
 offload=False # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -35,9 +35,9 @@ shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
 test_freq=10
-save_freq=20
+save_freq=100
 total_epochs=10
-total_training_steps=2000
+total_training_steps=1000
 val_before_train=True
 
 use_kl_in_reward=false
@@ -151,6 +151,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@
