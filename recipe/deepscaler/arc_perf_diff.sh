@@ -164,7 +164,7 @@ python3 -m verl.trainer.main_ppo \
     +adv_predictor.ema_coeff=0.5 \
     +adv_predictor.target=perf_diff \
     +adv_predictor.use_sampling_prior=false \
-    +adv_predictor.perf_diff_amplifier=1000.0 \
+    +adv_predictor.perf_diff_amplifier=100.0 \
     critic.optim.lr=1e-6 \
     +critic.model.style=osmd \
     +critic.model.num_labels=1 \
