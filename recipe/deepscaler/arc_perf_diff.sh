@@ -150,13 +150,13 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
     +adv_predictor.enable=true \
-    +adv_predictor.dormant_steps=70 \
+    +adv_predictor.dormant_steps=30 \
     +adv_predictor.critic_warmup=5 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
     +adv_predictor.temperature_annealing=false \
-    +adv_predictor.temperature=1.0 \
+    +adv_predictor.temperature=2.0 \
     +adv_predictor.top_p_annealing=false \
     +adv_predictor.top_p=0.9 \
     +adv_predictor.num_samples=${train_batch_size} \
