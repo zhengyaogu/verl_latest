@@ -24,7 +24,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+MODEL_PATH=Qwen/Qwen2.5-7B
 offload=False # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
@@ -37,7 +37,7 @@ first_time_dataset_prep=true # prepare dataset
 test_freq=10
 save_freq=20
 total_epochs=100
-total_training_steps=1000
+total_training_steps=600
 val_before_train=True
 
 use_kl_in_reward=false
