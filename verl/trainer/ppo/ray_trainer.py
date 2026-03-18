@@ -201,20 +201,17 @@ def osmd_sampler(estimates, k, alpha=0.5, tau=1.0, base_probs=None):
         indices: top-k indices from this random realization
         perturbed_values: the perturbed values for selected items
     """
-    print("estimates: ", estimates.shape)
     n = len(estimates)
     if base_probs is None:
         base_probs = torch.ones_like(estimates) / n
 
     sample_probs = torch.exp(estimates / tau)
     sample_probs = base_probs * sample_probs
-    print("sample_probs: ", sample_probs)
 
     sorted_indices = torch.argsort(sample_probs)
     prob_ranking = torch.argsort(sorted_indices)
 
     ranking_discount = 1 - alpha * prob_ranking / n
-    print("ranking_discount: ", ranking_discount)
     discounted_probs = sample_probs * ranking_discount
 
     sorted_discounted_probs = discounted_probs[sorted_indices]
@@ -223,12 +220,7 @@ def osmd_sampler(estimates, k, alpha=0.5, tau=1.0, base_probs=None):
     v = sorted_discounted_probs #
     u = sorted_sample_probs.flip(0).cumsum(0).flip(0) * alpha / n
     non_zero_idx = torch.nonzero(u < v, as_tuple=True)[0]
-    print("u: ", u)
-    print("v: ", v)
-    print("non_zero_idx: ", non_zero_idx)
-    print("non_zero_idx.shape: ", non_zero_idx.shape)
     i_star = non_zero_idx[0]
-    print("i_star: ", i_star)
 
     above_threshold_probs = sorted_discounted_probs[i_star:]
     above_threshold_probs = (1 - alpha * i_star / n) * above_threshold_probs / above_threshold_probs.sum()
@@ -238,11 +230,7 @@ def osmd_sampler(estimates, k, alpha=0.5, tau=1.0, base_probs=None):
     final_probs[:i_star] = alpha / n
     final_probs = final_probs[prob_ranking] # restore the original order
 
-    print("final_probs: ", final_probs.shape)
-
     sampled_idx = torch.multinomial(final_probs, num_samples=k, replacement=False)
-
-    print("sampled_idx: ", sampled_idx.shape)
 
     return sampled_idx, final_probs, i_star
 
@@ -1215,6 +1203,8 @@ class RayPPOTrainer:
         
         prompt2times_sampled = defaultdict(int)
 
+        if self.config.greso.get("enable", False):
+            zero_var_streak_index = defaultdict(list)
 
 
         # record the proportion of each abs adv level for critic training
@@ -1232,7 +1222,8 @@ class RayPPOTrainer:
         adv_predictor_batch = None
 
         for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
+            _dataloader_iter = iter(self.train_dataloader)
+            for batch_dict in _dataloader_iter:
                 metrics = {}
                 timing_raw = {}
                 
@@ -1254,24 +1245,6 @@ class RayPPOTrainer:
                     id2index = dict()
                     for i, uid in enumerate(batch.non_tensor_batch["uid"]):
                         id2index[uid] = batch.non_tensor_batch["index"][i]
-
-                    # raw_prompts = batch.non_tensor_batch["raw_prompt"]
-                    # difficulties = batch.batch["difficulty"]
-
-                    # step_array = np.full(len(raw_prompts), self.global_steps)
-                    # difficulties_np = difficulties.cpu().numpy()
-                    # # Build new DataFrame
-                    # new_df = pd.DataFrame({
-                    #     "raw_prompt": raw_prompts,
-                    #     "difficulty": difficulties_np,
-                    #     "step": step_array
-                    # })
-                    # difficulty_df = pd.concat([difficulty_df, new_df], ignore_index=True)
-
-                    # # Save the DataFrame to the constructed directory
-                    # save_path = os.path.join(save_dir, "difficulty_df.parquet")
-                    # difficulty_df.to_parquet(save_path)
-                    # print(f"Saved difficulty_df to {save_path}")
 
                     # advantage predictor runs before rollout
                     with marked_timer("curator_total", timing_raw):
@@ -1637,6 +1610,154 @@ class RayPPOTrainer:
                                         future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
                                     else:
                                         reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                            elif sampling_method == "greso":
+                                n_easy, n_hard, n_total = 0, 0, 0
+                                b_r_default = self.config.greso.get("default_rollout_bsz", None) #init b_r with default rollout bsz
+                                b_r = b_r_default
+                                p_easy = self.config.greso.get("p_easy", None)
+                                p_hard = self.config.greso.get("p_hard", None)
+                                p_delta = self.config.greso.get("p_delta", None)
+                                assert b_r is not None and p_easy is not None and p_hard is not None and p_delta is not None, "greso sampling method requires default_rollout_bsz, p_easy, p_hard and p_delta to be specified in config.greso"
+                                batch_curr = None
+                                n_added = 0
+
+                                def greso_filter(batch, zero_var_streak_index, p_easy, p_hard, b_r):
+                                    #global indices
+                                    # can I do global indices not using uid but original indexes?
+                                    global_indices = batch.non_tensor_batch["index"].tolist()
+
+                                    # each zero_var_streak_index[idx] is a 2-tuple (streak_length, is easy), get a list ps which picks p_easy if the streak is easy and p_hard if the streak is hard, then sample a mask based on ps to select data points for the next rollout batch
+                                    ps = []
+                                    for idx in global_indices:
+                                        if idx in zero_var_streak_index:
+                                            streak_length, is_easy = zero_var_streak_index[idx]
+                                            if is_easy:
+                                                p = 1 - (p_easy ** streak_length)
+                                            else:
+                                                p = 1 - (p_hard ** streak_length)
+                                                
+                                        else:
+                                            p = 1 # if the data point has never had zero variance output, we consider it easy and use p_easy
+                                        ps.append(p)
+                                    
+                                    # filter batch dataset based on ps (ps is the filtering probability) until we have b_r data points
+                                    ps = np.array(ps)
+                                    if len(ps) <= b_r:
+                                        return batch
+                                    else:
+                                        sampled_mask = np.random.rand(len(ps)) < ps
+                                        while sampled_mask.sum() < b_r:
+                                            sampled_mask = np.random.rand(len(ps)) < ps
+                                        selected_indices = np.where(sampled_mask)[0][:b_r]
+                                        batch_selected = batch.select_idxs(selected_indices)
+                                        return batch_selected
+                                
+                                def update_streak_index(zero_var_streak_index, batch):
+                                    id2score, uid2best_batch_idx, id2mean, id2std, id2reward_std = compute_z_score(batch)
+                                    # use id2reward_std to update zero_var_streak_index, if reward std is 0, increase the streak length by 1, otherwise reset the streak length to 0, also update whether it's easy or hard based on whether the mean score is above a certain threshold
+                                    for uid in id2score:
+                                        idx = id2index[uid]
+                                        if id2reward_std[uid] <= 1e-2: # consider it zero variance if reward std is less than 1e-2
+                                            is_easy_new = id2mean[uid] > 1e-2 # consider it easy if mean score is less than 1e-2
+                                            if idx in zero_var_streak_index:
+                                                streak_length, is_easy = zero_var_streak_index[idx]
+                                                if is_easy == is_easy_new:
+                                                    zero_var_streak_index[idx] = (streak_length + 1, is_easy)
+                                                else:
+                                                    zero_var_streak_index[idx] = (1, is_easy_new) # reset streak length to 1, update easy/hard based on new mean score
+                                            else:
+                                                zero_var_streak_index[idx] = (1, is_easy_new) # init with streak length 1 and easy
+                                    return zero_var_streak_index
+
+
+                                while n_added < self.config.data.get("train_batch_size", None):
+                                    batch = greso_filter(batch, zero_var_streak_index, p_easy, p_hard, b_r)
+                                    gen_batch = self._get_gen_batch(batch)
+                                    gen_batch.non_tensor_batch["uid"] = batch.non_tensor_batch["uid"]
+                                    n_added += len(gen_batch)
+                                    if n_added > self.config.data.get("train_batch_size", None):
+                                        gen_batch = gen_batch[:self.config.data.train_batch_size - (n_added - len(gen_batch))]
+                                    gen_batch.meta_info["global_steps"] = self.global_steps # pass global_steps to trace
+                                    gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+
+                                    # generate rollout & compute reward
+                                    with marked_timer("gen", timing_raw, color="red"):
+                                        if not self.async_rollout_mode:
+                                            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                                        else:
+                                            gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch)
+                                        
+                                        timing_raw.update(gen_batch_output.meta_info["timing"])
+                                        gen_batch_output.meta_info.pop("timing", None)
+
+                                        # repeat to align with repeated responses in rollout
+                                        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                                        batch = batch.union(gen_batch_output)
+
+                                        if "response_mask" not in batch.batch.keys():
+                                            batch.batch["response_mask"] = compute_response_mask(batch)
+                                        # Balance the number of valid tokens across DP ranks.
+                                        # NOTE: This usually changes the order of data in the `batch`,
+                                        # which won't affect the advantage calculation (since it's based on uid),
+                                        # but might affect the loss calculation (due to the change of mini-batching).
+                                        # TODO: Decouple the DP balancing and mini-batching.
+                                        if self.config.trainer.balance_batch:
+                                            self._balance_batch(batch, metrics=metrics)
+
+                                        # compute global_valid tokens
+                                        batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+
+                                        with marked_timer("reward", timing_raw, color="yellow"):
+                                            # compute reward model score
+                                            if self.use_rm:
+                                                reward_tensor = self.rm_wg.compute_rm_score(batch)
+                                                batch = batch.union(reward_tensor)
+
+                                            if self.config.reward_model.launch_reward_fn_async:
+                                                future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
+                                            else:
+                                                token_level_scores, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                                                batch.batch["token_level_scores"] = token_level_scores
+                                        
+                                        batch_curr = batch if batch_curr is None else DataProto.concat([batch_curr, batch])
+                                        if len(batch_curr) >= self.config.data.train_batch_size:
+                                            break
+                                        
+                                        #alpha is the current zero-variance example ratio in this iteration (as some rollouts have already occurred in this iteration)
+                                        id2score, uid2best_batch_idx, id2mean, id2std, id2reward_std = compute_z_score(batch_curr)
+                                        #compute the ratio of uids with near 0 reward_std from id2reward_std
+                                        alpha = len([v for v in id2reward_std.values() if v < 1e-2]) / len(id2reward_std)
+                                        n_easy = len([k for k in id2reward_std.keys() if id2reward_std[k] < 1e-2 and id2mean[k] > 1e-2])
+                                        n_hard = len([k for k in id2reward_std.keys() if id2reward_std[k] < 1e-2 and id2mean[k] <= 1e-2])
+                                        n_total = len(id2reward_std)
+                                        if n_easy / n_total > 1/12:
+                                            p_easy -= p_delta
+                                        else:
+                                            p_easy += p_delta
+                                        if n_hard / n_total > 1/6:
+                                            p_hard -= p_delta
+                                        else:
+                                            p_hard += p_delta
+                                        b_r = min(
+                                            b_r_default,
+                                            1.25 * (self.config.data.get("train_batch_size", None) - n_added) / (1 - alpha)
+                                        )
+                                        # next batch
+                                        batch_dict = next(_dataloader_iter)
+                                        batch = DataProto.from_single_dict(batch_dict)
+
+                                        # add uid to batch
+                                        batch.non_tensor_batch["uid"] = np.array(
+                                            [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
+                                        )
+                                        
+                                id2index = dict()
+                                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                                    id2index[uid] = batch.non_tensor_batch["index"][i]
+                                zero_var_streak_index = update_streak_index(zero_var_streak_index, batch_curr)
+
+                                batch = batch_curr
+
                             elif sampling_method == "disc":
                                 if self.async_rollout_mode:
                                     self.async_rollout_manager.wake_up() # manually wake up the rollout manager
@@ -1859,7 +1980,8 @@ class RayPPOTrainer:
                         
                         with marked_timer("adv", timing_raw, color="brown"):
                             # we combine with rule-based rm
-                            if not self.config.actor_rollout_ref.rollout.get("sampling_method", "greedy") == "disc":
+                            if not (self.config.actor_rollout_ref.rollout.get("sampling_method", "greedy") == "disc" or
+                                    self.config.greso.get("enable", False)):
                                 reward_extra_infos_dict: dict[str, list]
                                 if self.config.reward_model.launch_reward_fn_async:
                                     reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
