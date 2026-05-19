@@ -148,13 +148,17 @@ class RewardLoopWorker:
         if self.config.reward.custom_reward_function.path is not None:
             # directly use user-customized reward function
             return await self.reward_manager.run_single(data)
-        else:
-            if self.config.reward.reward_model.enable:
-                # we assume the rm is disrm
-                # genrm must set custom_reward_function
-                return await self.compute_score_disrm(data)
-            else:
-                return await self.reward_manager.run_single(data)
+
+        # Per-item style gate: only items with reward_model.style="model" are scored by
+        # the reward model; "rule" items go through the rule-based reward manager. This
+        # avoids wasted /classify calls on rule items in mixed-source datasets (e.g. MGS,
+        # which interleaves chat/model with math+IF/rule). When reward_model is disabled
+        # entirely, every item falls through to the rule-based path below.
+        style = data[0].non_tensor_batch.get("reward_model", {}).get("style", "rule")
+        if self.config.reward.reward_model.enable and style == "model":
+            # we assume the rm is disrm; genrm must set custom_reward_function
+            return await self.compute_score_disrm(data)
+        return await self.reward_manager.run_single(data)
 
     async def _post_request(self, payload: dict, endpoint: str, max_retries: int = 16):
         url = f"http://{self.reward_router_address}/{endpoint}"

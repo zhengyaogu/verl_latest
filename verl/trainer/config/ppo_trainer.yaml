@@ -197,6 +197,9 @@ trainer:
   # Device to run training on (e.g., "cuda", "cpu")
   device: cuda
 
+  # Legacy worker implementation flag (informational — no longer used; kept for backward compat with scripts)
+  use_legacy_worker_impl: null
+
 # profiler configs
 global_profiler:
 

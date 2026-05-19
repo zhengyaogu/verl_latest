@@ -354,7 +354,7 @@ def create_rl_sampler(data_config, dataset):
         sampler (Sampler): The sampler.
     """
     import torch
-    from torch.utils.data import SequentialSampler
+    from torch.utils.data import SequentialSampler, WeightedRandomSampler
 
     # torch.utils.data.RandomSampler could not recover properly
     from torchdata.stateful_dataloader.sampler import RandomSampler
@@ -374,6 +374,25 @@ def create_rl_sampler(data_config, dataset):
             "If the dataloader caches data before the batch is done the "
             "curriculum sampler won't have the opportunity to reorder it. "
         )
+
+    # Weighted sampling to enforce per-source proportions in each batch.
+    # Activated when data.source_proportions is set in config, e.g.:
+    #   source_proportions:
+    #     wildchat: 0.33
+    #     nemotron-rl-if: 0.33
+    #     DigitalLearningGmbH/MATH-lighteval: 0.34
+    elif data_config.get("source_proportions") is not None:
+        from omegaconf import OmegaConf
+
+        proportions = OmegaConf.to_container(data_config.source_proportions, resolve=True)
+        weights = dataset.get_source_weights(proportions)
+        sampler = WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(dataset),
+            replacement=True,
+            generator=torch.Generator().manual_seed(data_config.get("seed", 1)),
+        )
+        print(f"Using WeightedRandomSampler with proportions: {proportions}")
 
     # Use a sampler to facilitate checkpoint resumption.
     # If shuffling is enabled in the data configuration, create a random sampler.

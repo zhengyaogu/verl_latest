@@ -46,7 +46,10 @@ class NaiveRewardManager(AbstractRewardManager):
     def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
         """We will expand this function gradually based on the available datasets"""
 
-        # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
+        # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn.
+        # In mixed-source batches, RewardLoopWorker.compute_score already gates per-item on
+        # reward_model.style — model items go to the RM and rule items go through the rule
+        # manager — so rm_scores already contains the correct per-item reward.
         reward_from_rm_scores = self._extract_reward_from_rm_scores(data, return_dict)
         if reward_from_rm_scores is not None:
             return reward_from_rm_scores

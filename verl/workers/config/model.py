@@ -143,6 +143,11 @@ class HFModelConfig(BaseConfig):
 
     architectures: Optional[list[str]] = None
 
+    # adv_predictor / OSMD critic fields
+    # style="osmd" selects the OSMD critic; "value_head" is the standard critic
+    style: str = "value_head"
+    num_labels: int = 1
+
     mtp: MtpConfig = field(default_factory=MtpConfig)
 
     def __post_init__(self):

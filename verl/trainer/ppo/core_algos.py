@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig
 
 import verl.utils.torch_functional as verl_F
@@ -2485,3 +2486,50 @@ def compute_policy_loss_bypass_mode(
     pg_metrics.update(rollout_metrics)
 
     return pg_loss, pg_metrics
+
+
+def compute_ordinal_loss(
+    logits: torch.Tensor,
+    target_levels: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    weights: torch.Tensor = None,
+):
+    """Binary cross-entropy ordinal regression loss for the OSMD critic."""
+    n = logits.shape[-1]
+    t = (torch.arange(n, device=target_levels.device).unsqueeze(0) < target_levels.unsqueeze(1)).unsqueeze(1).float()
+    loss = F.binary_cross_entropy_with_logits(logits, t, reduction="none")
+    loss = loss.sum(dim=-1) / n
+    response_mask = torch.ones_like(loss)
+    return agg_loss(loss_mat=loss, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=weights)
+
+
+def compute_osmd_loss(
+    probs: torch.Tensor,
+    losses: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+):
+    """OSMD critic loss: expected loss under the sampling distribution."""
+    adv = probs * losses
+    response_mask = torch.ones_like(adv)
+    return agg_loss(loss_mat=adv, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=None)
+
+
+def compute_expectile_loss(
+    vpreds: torch.Tensor,
+    returns: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    cliprange_value: float,
+    tau: float,
+    loss_agg_mode: str = "token-mean",
+    weights: torch.Tensor = None,
+):
+    """Expectile regression loss for value function training."""
+    vpredclipped = verl_F.clip_by_value(vpreds, values - cliprange_value, values + cliprange_value)
+    diff = vpreds - returns
+    weight = torch.where(diff > 0, tau, (1 - tau))
+    vf_losses1 = weight * (diff**2)
+    vf_losses2 = (vpredclipped - returns) ** 2
+    vf_loss = agg_loss(loss_mat=vf_losses1, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, weights=weights)
+    vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
+    return vf_loss, vf_clipfrac

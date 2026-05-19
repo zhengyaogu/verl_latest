@@ -300,6 +300,31 @@ class RLHFDataset(Dataset):
     def __len__(self):
         return len(self.dataframe)
 
+    def get_source_weights(self, proportions: dict) -> "torch.Tensor":
+        """Return per-sample weights for ``WeightedRandomSampler``.
+
+        Args:
+            proportions: mapping ``data_source`` → desired fraction, e.g.
+                ``{"wildchat": 0.33, "nemotron-rl-if": 0.33,
+                   "DigitalLearningGmbH/MATH-lighteval": 0.34}``.
+                Values need not sum to 1; ``WeightedRandomSampler`` normalises internally.
+
+        Returns:
+            ``DoubleTensor`` of length ``len(self)`` with per-sample sampling weights.
+            Sources not listed in ``proportions`` get weight 0 (excluded).
+        """
+        from collections import Counter
+
+        sources = self.dataframe["data_source"]
+        counts = Counter(sources)
+        total = len(sources)
+        weights = []
+        for src in sources:
+            actual_freq = counts[src] / total
+            desired = proportions.get(src, 0.0)
+            weights.append(desired / actual_freq if actual_freq > 0 else 0.0)
+        return torch.DoubleTensor(weights)
+
     def _build_messages(self, example: dict, key: str):
         """Replace <image> and <video> placeholder in messages with corresponding image and video
         which is required by processor.apply_chat_template.

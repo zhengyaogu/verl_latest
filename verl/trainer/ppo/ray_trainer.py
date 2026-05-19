@@ -71,7 +71,46 @@ from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.config import DistillationConfig, EngineConfig
 from verl.workers.rollout.llm_server import LLMServerManager
-from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
+from verl.workers.utils.padding import (
+    extract_last_token_values,
+    left_right_2_no_padding,
+    no_padding_2_padding,
+    prompts_left_right_2_no_padding,
+)
+
+
+def _osmd_sampler(estimates: torch.Tensor, k: int, alpha: float = 0.5, tau: float = 1.0):
+    """OSMD sampling: rank-discounted sampling from a set of utility estimates.
+
+    Returns (sampled_idx, final_probs, i_star).
+    """
+    n = len(estimates)
+    base_probs = torch.ones_like(estimates) / n
+    sample_probs = torch.exp(estimates / tau)
+    sample_probs = base_probs * sample_probs
+
+    sorted_indices = torch.argsort(sample_probs)
+    prob_ranking = torch.argsort(sorted_indices)
+
+    ranking_discount = 1 - alpha * prob_ranking / n
+    discounted_probs = sample_probs * ranking_discount
+    sorted_discounted_probs = discounted_probs[sorted_indices]
+    sorted_sample_probs = sample_probs[sorted_indices]
+
+    v = sorted_discounted_probs
+    u = sorted_sample_probs.flip(0).cumsum(0).flip(0) * alpha / n
+    non_zero_idx = torch.nonzero(u < v, as_tuple=True)[0]
+    i_star = non_zero_idx[0] if len(non_zero_idx) > 0 else torch.tensor(0)
+
+    above_probs = sorted_discounted_probs[i_star:]
+    above_probs = (1 - alpha * i_star / n) * above_probs / (above_probs.sum() + 1e-12)
+    final_probs = torch.zeros_like(discounted_probs)
+    final_probs[i_star:] = above_probs
+    final_probs[:i_star] = alpha / n
+    final_probs = final_probs[prob_ranking]
+
+    sampled_idx = torch.multinomial(final_probs, num_samples=k, replacement=False)
+    return sampled_idx, final_probs, i_star
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
@@ -295,6 +334,7 @@ class RayPPOTrainer:
         self.use_rm = need_reward_model(self.config)
 
         self.use_critic = need_critic(self.config)
+        self.use_osmd_critic = False  # set to True in init_workers when adv_predictor+osmd is enabled
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name if device_name else self.config.trainer.device
         self.validation_generations_logger = ValidationGenerationsLogger(
@@ -790,10 +830,21 @@ class RayPPOTrainer:
             # assign critic loss
             from functools import partial
 
-            from verl.workers.utils.losses import value_loss
+            use_osmd = self.config.get("adv_predictor", {}).get("enable", False) and self.config.critic.model.get(
+                "style", "value_head"
+            ) == "osmd"
+            if use_osmd:
+                from verl.workers.utils.losses import osmd_loss
 
-            value_loss_ = partial(value_loss, config=orig_critic_cfg)
-            self.critic_wg.set_loss_fn(value_loss_)
+                clip_range = float(self.config.critic.get("clip_range", 0.5))
+                self.critic_wg.set_loss_fn(partial(osmd_loss, clip_range=clip_range))
+                self.use_osmd_critic = True
+            else:
+                from verl.workers.utils.losses import value_loss
+
+                value_loss_ = partial(value_loss, config=orig_critic_cfg)
+                self.critic_wg.set_loss_fn(value_loss_)
+                self.use_osmd_critic = False
 
         if self.use_reference_policy and not self.ref_in_actor:
             if str(Role.RefPolicy) in all_wg:
@@ -1143,6 +1194,58 @@ class RayPPOTrainer:
         values = DataProto.from_tensordict(values)
         return values
 
+    def _compute_adv_predictor_values(self, batch: DataProto) -> DataProto:
+        """Pre-rollout OSMD critic inference on prompt-only batches.
+
+        Converts padded prompts to no-padding format, runs the value head, and
+        extracts the last token's logit per sequence.  Returns a DataProto with
+        'values' (raw logit) and 'probs' (log-softmax over the local batch).
+        """
+        batch_td = batch.to_tensordict()
+        # Convert padded prompt-only batch to nested no-padding format
+        batch_td = prompts_left_right_2_no_padding(batch_td)
+        # Critic model needs temperature (set to 1.0 — unused for value head)
+        tu.assign_non_tensor(batch_td, temperature=1.0, compute_loss=False)
+        output = self.critic_wg.infer_batch(batch_td)
+        output = output.get()
+        values_nested = tu.get(output, "values")  # nested (bsz, prompt_len_i)
+        last_logits = extract_last_token_values(values_nested)  # (bsz,)
+        probs = torch.nn.functional.log_softmax(last_logits, dim=0)  # (bsz,)
+        result = tu.get_tensordict(
+            {"values": last_logits.unsqueeze(-1).float(), "probs": probs.float()}
+        )
+        return DataProto.from_tensordict(result)
+
+    def _update_osmd_critic(self, batch: DataProto) -> DataProto:
+        """Train the OSMD critic on a batch containing 'osmd_targets' and prompt tensors.
+
+        Builds a no-padding TensorDict from the prompt tokens, adds 'osmd_targets',
+        and calls train_mini_batch with num_mini_batch=1 so log_softmax covers the
+        full local batch.
+        """
+        batch_td = batch.to_tensordict()
+        # Convert padded prompts to nested no-padding format
+        batch_td = prompts_left_right_2_no_padding(batch_td)
+        tu.assign_non_tensor(batch_td, temperature=1.0)
+
+        ppo_epochs = self.config.critic.get("ppo_epochs", 1)
+        seed = self.config.critic.get("data_loader_seed", 1)
+        tu.assign_non_tensor(
+            batch_td,
+            num_mini_batch=1,
+            epochs=ppo_epochs,
+            seed=seed,
+        )
+
+        output = self.critic_wg.train_mini_batch(batch_td)
+        output = output.get()
+        output = tu.get(output, "metrics")
+        output = rename_dict(output, "critic/")
+        if "critic/mfu" in output:
+            output["perf/mfu/critic"] = output.pop("critic/mfu")
+        critic_output = DataProto.from_single_dict(data={}, meta_info={"metrics": output})
+        return critic_output
+
     def _compute_ref_log_prob(self, batch: DataProto) -> DataProto:
         # step 1: convert dataproto to tensordict.
         batch_td = batch.to_tensordict()
@@ -1321,6 +1424,12 @@ class RayPPOTrainer:
         last_val_metrics = None
         self.max_steps_duration = 0
 
+        # Adv-predictor state
+        _adv_replay_buffer: Optional[DataProto] = None
+        _adv_predictor_prompt_batch: Optional[DataProto] = None
+        # Maps prompt_hash -> deque of recent per-prompt targets for window averaging
+        _adv_window_history: dict[int, list[float]] = {}
+
         prev_step_profile = False
         curr_step_profile = (
             self.global_steps in self.config.global_profiler.steps
@@ -1351,6 +1460,92 @@ class RayPPOTrainer:
                 )
 
                 gen_batch = self._get_gen_batch(batch)
+
+                # Adv-predictor pre-rollout: sample a subset of prompts via the OSMD critic.
+                if self.use_osmd_critic:
+                    with marked_timer("adv_predictor_pre_rollout", timing_raw):
+                        adv_cfg = self.config.adv_predictor
+                        num_samples = int(adv_cfg.get("num_samples", len(gen_batch)))
+                        dormant_steps = int(adv_cfg.get("dormant_steps", 0))
+                        critic_warmup = int(adv_cfg.get("critic_warmup", 0))
+
+                        adv_pred_out = self._compute_adv_predictor_values(gen_batch)
+                        estimates = adv_pred_out.batch["values"].squeeze(-1)
+
+                        n_total = len(gen_batch)
+                        # full_probs[i] = probability that prompt i was selected under the
+                        # active sampling distribution; the OSMD loss reweights by these.
+                        full_probs: torch.Tensor
+
+                        if self.global_steps <= dormant_steps + critic_warmup:
+                            sampled_idx = torch.randperm(n_total)[:num_samples]
+                            full_probs = torch.full((n_total,), 1.0 / n_total)
+                        else:
+                            sampler_type = adv_cfg.get("sampler", "osmd")
+                            total_steps = max(self.total_training_steps, 1)
+
+                            if sampler_type == "osmd":
+                                if adv_cfg.get("alpha_annealing", False):
+                                    a0 = float(adv_cfg.get("alpha", 0.5))
+                                    a1 = float(adv_cfg.get("final_alpha", a0))
+                                    alpha = a0 + (a1 - a0) * self.global_steps / total_steps
+                                else:
+                                    alpha = float(adv_cfg.get("alpha", 0.5))
+                                tau = float(adv_cfg.get("temperature", 1.0))
+                                sampled_idx, full_probs, _ = _osmd_sampler(
+                                    estimates, num_samples, alpha=alpha, tau=tau
+                                )
+                            elif sampler_type == "softmax":
+                                if adv_cfg.get("temperature_annealing", False):
+                                    t0 = float(adv_cfg.get("temperature", 1.0))
+                                    t1 = float(adv_cfg.get("max_temperature", t0))
+                                    tau = t0 + (t1 - t0) * self.global_steps / total_steps
+                                else:
+                                    tau = float(adv_cfg.get("temperature", 1.0))
+                                weights = torch.nn.functional.gumbel_softmax(estimates, tau=tau, dim=0)
+                                sampled_idx = torch.topk(weights, num_samples, dim=0, sorted=False).indices
+                                sampled_idx = sampled_idx[torch.randperm(sampled_idx.shape[0])]
+                                # Selection prob of each prompt under the underlying softmax;
+                                # gumbel_softmax(...) is one stochastic realization, so we use
+                                # the deterministic softmax for the importance ratio's denominator.
+                                full_probs = torch.nn.functional.softmax(estimates / tau, dim=0)
+                            elif sampler_type == "uniform":
+                                # Softmax-weighted sampling with top-p threshold.
+                                # Prompts above the top-p cumulative mass are sampled preferentially;
+                                # the remainder are filled uniformly from the rest.
+                                if adv_cfg.get("top_p_annealing", False):
+                                    p0 = float(adv_cfg.get("top_p", 0.9))
+                                    p1 = float(adv_cfg.get("final_top_p", p0))
+                                    top_p = p0 + (p1 - p0) * self.global_steps / total_steps
+                                else:
+                                    top_p = float(adv_cfg.get("top_p", 0.9))
+                                tau = float(adv_cfg.get("temperature", 1.0))
+                                sample_weights = torch.nn.functional.softmax(estimates / tau, dim=0)
+                                sorted_idx = torch.argsort(sample_weights)
+                                top_weights = sample_weights[sorted_idx].flip(0).cumsum(0).flip(0)
+                                sampling_threshold = torch.nonzero(top_weights <= top_p, as_tuple=True)[0]
+                                threshold_i = 0 if sampling_threshold.shape[0] == 0 else sampling_threshold[0].item()
+                                num_above = min(n_total - threshold_i, num_samples)
+                                num_uniform = num_samples - num_above
+                                idx_above = torch.multinomial(sample_weights, num_samples=num_above, replacement=False)
+                                if num_uniform > 0:
+                                    rem = torch.from_numpy(np.setdiff1d(np.arange(n_total), idx_above.numpy()))
+                                    idx_below = rem[torch.randperm(rem.shape[0])[:num_uniform]]
+                                    sampled_idx = torch.cat([idx_above, idx_below])
+                                else:
+                                    sampled_idx = idx_above
+                                full_probs = sample_weights
+                            else:
+                                sampled_idx = torch.randperm(n_total)[:num_samples]
+                                full_probs = torch.full((n_total,), 1.0 / n_total)
+
+                        # Keep only selected prompts for rollout, and remember the prob each
+                        # was selected with for the OSMD critic's IS ratio.
+                        sampled_probs = full_probs[sampled_idx].detach().to(torch.float32)
+                        _adv_predictor_prompt_batch = gen_batch.select_idxs(sampled_idx)
+                        _adv_predictor_prompt_batch.batch["sampled_probs"] = sampled_probs
+                        gen_batch = gen_batch.select_idxs(sampled_idx)
+                        batch = batch.select_idxs(sampled_idx)
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
@@ -1486,8 +1681,8 @@ class RayPPOTrainer:
                             ref_log_prob = self._compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
 
-                    # compute values
-                    if self.use_critic:
+                    # compute values (skip for OSMD critic — it doesn't use per-token values)
+                    if self.use_critic and not self.use_osmd_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
                             values = self._compute_values(batch)
                             batch = batch.union(values)
@@ -1539,7 +1734,7 @@ class RayPPOTrainer:
                             config=self.config.algorithm,
                         )
 
-                    # update critic
+                    # update critic (standard path; OSMD critic runs after actor update below)
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
                             critic_output = self._update_critic(batch)
@@ -1583,6 +1778,106 @@ class RayPPOTrainer:
 
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+
+                        # OSMD critic update — runs after actor update so that perf_diff can use
+                        # post-update actor log probs as the importance ratio numerator.
+                        if self.use_osmd_critic and _adv_predictor_prompt_batch is not None:
+                            with marked_timer("update_osmd_critic", timing_raw, color="pink"):
+                                adv_cfg = self.config.adv_predictor
+                                dormant_steps = int(adv_cfg.get("dormant_steps", 0))
+
+                                advantages = batch.batch["advantages"]  # (N, response_len)
+                                response_mask = batch.batch["response_mask"]  # (N, response_len)
+                                per_seq_abs_adv = masked_mean(advantages.abs(), response_mask, axis=-1)  # (N,)
+
+                                # --- abs_adv target (contrastive) ---
+                                uid2abs_adv: dict = {}
+                                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                                    uid2abs_adv.setdefault(uid, []).append(per_seq_abs_adv[i].item())
+                                uid2abs_adv = {uid: float(np.mean(vs)) for uid, vs in uid2abs_adv.items()}
+
+                                target_type = adv_cfg.get("target", "abs_adv")
+                                use_window_avg = adv_cfg.get("use_window_avg_target", False)
+                                history_length = int(adv_cfg.get("history_length", 1))
+
+                                if target_type == "perf_diff":
+                                    # Post-update actor log probs (IS ratio numerator)
+                                    new_log_prob_output, _ = self._compute_old_log_prob(batch)
+                                    new_log_probs = new_log_prob_output.batch["old_log_probs"]
+                                    old_log_probs = batch.batch["old_log_probs"]
+
+                                    seq_lengths = response_mask.sum(dim=-1).clamp(min=1)
+                                    log_ir = new_log_probs - old_log_probs
+                                    seq_log_ir = (log_ir * response_mask).sum(dim=-1) / seq_lengths
+                                    ir = torch.exp(seq_log_ir)  # (N,)
+
+                                    # signed advantages * IS ratio, then per-sequence masked mean
+                                    perf_diff_token = advantages * ir.unsqueeze(-1)  # (N, response_len)
+                                    per_seq_perf_diff = masked_mean(perf_diff_token, response_mask, axis=-1)  # (N,)
+
+                                    uid2target: dict = {}
+                                    for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                                        uid2target.setdefault(uid, []).append(per_seq_perf_diff[i].item())
+                                    uid2target = {uid: float(np.mean(vs)) for uid, vs in uid2target.items()}
+                                    amplifier = float(adv_cfg.get("perf_diff_amplifier", 1.0))
+                                    uid2target = {uid: v * amplifier for uid, v in uid2target.items()}
+
+                                    # Window average keyed by stable dataset index
+                                    final_targets = []
+                                    for i, uid in enumerate(_adv_predictor_prompt_batch.non_tensor_batch["uid"]):
+                                        current_target = uid2target.get(uid, 0.0)
+                                        if use_window_avg:
+                                            stable_idx = int(_adv_predictor_prompt_batch.non_tensor_batch["index"][i])
+                                            hist = _adv_window_history.setdefault(stable_idx, [])
+                                            hist.append(current_target)
+                                            if len(hist) > history_length:
+                                                del hist[:-history_length]
+                                            final_targets.append(float(np.mean(hist)))
+                                        else:
+                                            final_targets.append(current_target)
+                                else:
+                                    # abs_adv / contrastive: no window average
+                                    final_targets = [
+                                        uid2abs_adv.get(uid, 0.0)
+                                        for uid in _adv_predictor_prompt_batch.non_tensor_batch["uid"]
+                                    ]
+
+                                osmd_targets = torch.tensor(final_targets, dtype=torch.float32)
+
+                                # Build critic training batch
+                                critic_train_batch = _adv_predictor_prompt_batch
+                                critic_train_batch.batch["osmd_targets"] = osmd_targets
+
+                                # Merge with replay buffer
+                                train_batch_size = int(adv_cfg.get("train_batch_size", len(critic_train_batch)))
+                                replay_slots = max(0, train_batch_size - len(critic_train_batch))
+
+                                if (
+                                    self.global_steps > dormant_steps
+                                    and _adv_replay_buffer is not None
+                                    and len(_adv_replay_buffer) >= replay_slots > 0
+                                ):
+                                    replay_idx = torch.randperm(len(_adv_replay_buffer))[:replay_slots]
+                                    replay_batch = _adv_replay_buffer.select_idxs(replay_idx)
+                                    full_critic_batch = DataProto.concat([replay_batch, critic_train_batch])
+                                else:
+                                    full_critic_batch = critic_train_batch
+
+                                if self.global_steps >= dormant_steps:
+                                    critic_output = self._update_osmd_critic(full_critic_batch)
+                                    critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
+                                    metrics.update(critic_output_metrics)
+
+                                # Update replay buffer
+                                if _adv_replay_buffer is None:
+                                    _adv_replay_buffer = deepcopy(critic_train_batch)
+                                else:
+                                    _adv_replay_buffer = DataProto.concat(
+                                        [_adv_replay_buffer, deepcopy(critic_train_batch)]
+                                    )
+                                    max_buf = int(adv_cfg.get("replay_buffer_size", 1024))
+                                    if len(_adv_replay_buffer) > max_buf:
+                                        _adv_replay_buffer = _adv_replay_buffer[-max_buf:]
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

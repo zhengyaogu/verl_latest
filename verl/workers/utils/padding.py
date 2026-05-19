@@ -201,6 +201,55 @@ def response_from_nested(tensor: torch.Tensor, response_mask: torch.Tensor) -> t
     return torch.nested.as_nested_tensor(response_list, layout=torch.jagged)
 
 
+def prompts_left_right_2_no_padding(data: TensorDict) -> TensorDict:
+    """Convert prompt-only padded batch to no-padding nested tensor format.
+
+    Used for pre-rollout adv_predictor inference where no response_mask exists yet.
+
+    Args:
+        data: TensorDict with "input_ids", "attention_mask", "position_ids"
+
+    Returns:
+        data: TensorDict with nested "input_ids", "position_ids", "loss_mask"
+    """
+    assert "input_ids" in data, "input_ids is required"
+    assert "attention_mask" in data, "attention_mask is required"
+    assert "position_ids" in data, "position_ids is required"
+
+    input_ids = data.pop("input_ids")  # (bsz, prompt_len)
+    attention_mask = data["attention_mask"]  # (bsz, prompt_len)
+    position_ids = data["position_ids"]  # (bsz, prompt_len) or (bsz, 4, prompt_len)
+
+    input_ids_list, position_ids_list, loss_mask_list = [], [], []
+    for i in range(attention_mask.shape[0]):
+        curr_mask = attention_mask[i].bool()
+        input_ids_list.append(input_ids[i, curr_mask])
+        loss_mask_list.append(torch.ones(curr_mask.sum(), device=input_ids.device, dtype=input_ids.dtype))
+        if position_ids[i].dim() == 1:
+            position_ids_list.append(position_ids[i][curr_mask])
+        else:  # (4, prompt_len)
+            position_ids_list.append(position_ids[i][:, curr_mask])
+
+    data["input_ids"] = torch.nested.as_nested_tensor(input_ids_list, layout=torch.jagged)
+    data["position_ids"] = torch.nested.as_nested_tensor(position_ids_list, layout=torch.jagged)
+    data["loss_mask"] = torch.nested.as_nested_tensor(loss_mask_list, layout=torch.jagged)
+
+    return data
+
+
+def extract_last_token_values(values: torch.Tensor) -> torch.Tensor:
+    """Extract the last token's value from each sequence in a nested values tensor.
+
+    Args:
+        values: nested tensor of shape (bsz, seq_len_i) from FSDPEngineWithValueHead
+
+    Returns:
+        last_values: flat tensor of shape (bsz,) with the last-token value per sequence
+    """
+    assert values.is_nested, "values must be a nested tensor"
+    return torch.stack([v[-1] for v in values.unbind()])
+
+
 def response_to_nested(tensor: torch.Tensor, response_mask: torch.Tensor) -> torch.Tensor:
     """Convert padded response tensor to nested tensor.
 

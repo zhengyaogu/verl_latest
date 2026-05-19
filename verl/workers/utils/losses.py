@@ -14,6 +14,7 @@
 
 
 import torch
+import torch.nn.functional as F
 from tensordict import TensorDict
 
 from verl.trainer.ppo.core_algos import agg_loss, compute_value_loss, get_policy_loss_fn, kl_penalty
@@ -22,7 +23,7 @@ from verl.utils.dataset.dataset_utils import DatasetPadMode
 from verl.utils.metric import AggregationType, Metric
 from verl.utils.torch_functional import masked_mean, masked_sum
 from verl.workers.config import ActorConfig, CriticConfig
-from verl.workers.utils.padding import no_padding_2_padding
+from verl.workers.utils.padding import extract_last_token_values, no_padding_2_padding
 
 
 def sft_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None):
@@ -184,3 +185,45 @@ def value_loss(config: CriticConfig, model_output, data: TensorDict, dp_group=No
     )
 
     return vf_loss, metrics
+
+
+def osmd_loss(model_output, data: TensorDict, dp_group=None, clip_range: float = 0.5):
+    """OSMD critic loss for the adv_predictor (PPO-clipped IS surrogate).
+
+    ``L = mean(max(-A·r, -A·clip(r, 1±ε)))`` where ``r = softmax(z)/sampled_probs``
+    is the ratio between the current curator and the sampling distribution that
+    produced the prompts.
+
+    Softmax / sampled_probs L1-normalization are taken **per DP rank**, matching
+    verl_latest. The paper assumes a single global softmax over the candidate
+    batch, but ``torch.distributed.all_gather`` is not differentiable, so an
+    explicit gather here would silently detach the loss from autograd. DDP's
+    gradient sync still keeps parameter updates consistent across ranks; the
+    loss is just an average of per-rank PPO-clip losses.
+    """
+    del dp_group  # per-rank softmax — see docstring
+    values = model_output["values"]  # nested (bsz, prompt_len_i)
+    last_logits = extract_last_token_values(values)  # (bsz,)
+    osmd_targets = data["osmd_targets"]
+
+    log_probs = F.log_softmax(last_logits, dim=0)
+    sampled_probs_norm = F.normalize(data["sampled_probs"], p=1, dim=0)
+
+    ratio = torch.exp(log_probs) / sampled_probs_norm.clamp(min=1e-12)
+    l1 = -osmd_targets * ratio
+    l2 = -osmd_targets * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
+    clip_pg_losses = torch.maximum(l1, l2)
+    response_mask = torch.ones_like(clip_pg_losses)
+    loss = agg_loss(loss_mat=clip_pg_losses, loss_mask=response_mask, loss_agg_mode="token-mean")
+    clipfrac = torch.gt(l2, l1).float().mean()
+
+    ratio_d = ratio.detach()
+    metrics = {
+        "critic/osmd_loss": Metric(value=loss, aggregation=AggregationType.MEAN),
+        "critic/last_logit_mean": Metric(value=last_logits.mean(), aggregation=AggregationType.MEAN),
+        "critic/ratio_mean": Metric(value=ratio_d.mean(), aggregation=AggregationType.MEAN),
+        "critic/ratio_max": Metric(value=ratio_d.max(), aggregation=AggregationType.MAX),
+        "critic/ratio_min": Metric(value=ratio_d.min(), aggregation=AggregationType.MIN),
+        "critic/clipfrac": Metric(value=clipfrac, aggregation=AggregationType.MEAN),
+    }
+    return loss, metrics
