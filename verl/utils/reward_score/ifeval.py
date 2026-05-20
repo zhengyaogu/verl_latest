@@ -1741,15 +1741,18 @@ def eval_one_example(
 
 class IFEvalRewardModel:
     def __init__(self):
-        # Ensure NLTK data is available
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            nltk.download('punkt')
-        try:
-            nltk.data.find('corpora/stopwords')
-        except LookupError:
-            nltk.download('stopwords')
+        # NLTK corpora must be pre-downloaded by setup.sh.
+        # Downloading lazily here would race across concurrent Ray reward workers
+        # (BadZipFile / FileNotFoundError on the partially-written zip).
+        for resource in ('tokenizers/punkt', 'corpora/stopwords'):
+            try:
+                nltk.data.find(resource)
+            except LookupError as e:
+                raise RuntimeError(
+                    f"NLTK resource {resource!r} not found. Run setup.sh "
+                    f"(or: python -m nltk.downloader punkt punkt_tab stopwords) "
+                    f"before launching training."
+                ) from e
 
     def _clean_response(self, response: str) -> str:
         """
