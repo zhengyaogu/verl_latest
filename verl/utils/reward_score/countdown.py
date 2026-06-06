@@ -1,3 +1,4 @@
+import json
 import re
 import random
 import ast
@@ -68,6 +69,8 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         format_score: the score for correct format but wrong answer
         score: the score for the correct answer
     """
+    if isinstance(ground_truth, str):
+        ground_truth = json.loads(ground_truth)
     target = ground_truth['target']
     numbers = ground_truth['numbers']
     numbers = [int(n) for n in numbers.split(',')]

@@ -46,8 +46,14 @@ class NaiveRewardManager(AbstractRewardManager):
     def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
         """We will expand this function gradually based on the available datasets"""
 
-        # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
-        if "rm_scores" in data.batch.keys():
+        has_rm_scores = "rm_scores" in data.batch.keys()
+
+        # Fast path: if all items are model-based and rm_scores are available, return directly.
+        # This preserves original behaviour for non-mixed (pure model-reward) training runs.
+        if has_rm_scores and all(
+            data[i].non_tensor_batch.get("reward_model", {}).get("style", "rule") == "model"
+            for i in range(len(data))
+        ):
             if return_dict:
                 reward_extra_keys = data.meta_info.get("reward_extra_keys", [])
                 reward_extra_info = {key: data.non_tensor_batch[key] for key in reward_extra_keys}
@@ -64,21 +70,32 @@ class NaiveRewardManager(AbstractRewardManager):
             data_item = data[i]  # DataProtoItem
 
             prompt_ids = data_item.batch["prompts"]
-
             prompt_length = prompt_ids.shape[-1]
+            valid_response_length = data_item.batch["attention_mask"][prompt_length:].sum()
 
+            reward_model_info = data_item.non_tensor_batch.get("reward_model", {})
+            style = reward_model_info.get("style", "rule")
+
+            # Model-based items: use the pre-computed rm_score for this item.
+            # If no rm_scores are available (e.g. during validation without an RM actor),
+            # the reward stays 0 for this item.
+            if style == "model":
+                if has_rm_scores:
+                    reward_tensor[i] = data.batch["rm_scores"][i]
+                reward_extra_info["score"].append(reward_tensor[i, valid_response_length - 1].item())
+                continue
+
+            # Rule-based items: decode and call compute_score.
             valid_prompt_length = data_item.batch["attention_mask"][:prompt_length].sum()
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
             response_ids = data_item.batch["responses"]
-            valid_response_length = data_item.batch["attention_mask"][prompt_length:].sum()
             valid_response_ids = response_ids[:valid_response_length]
 
-            # decode
             prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
 
-            ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
+            ground_truth = reward_model_info.get("ground_truth", None)
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)

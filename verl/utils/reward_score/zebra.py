@@ -1,3 +1,4 @@
+import json
 import re
 import random
 from verl.utils.reward_score import extract_solution
@@ -26,6 +27,8 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         format_score: the score for correct format but wrong answer
         score: the score for the correct answer
     """
+    if isinstance(ground_truth, str):
+        ground_truth = json.loads(ground_truth)
     target = ground_truth['target']
     
     equation = extract_solution(solution_str=solution_str)

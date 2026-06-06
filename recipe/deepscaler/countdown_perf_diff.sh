@@ -25,7 +25,7 @@ project_name='DISC'
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-7B
+MODEL_PATH=Qwen/Qwen2.5-3B
 CRITIC_MODEL_PATH=Qwen/Qwen3-0.6B
 offload=True # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
@@ -36,10 +36,10 @@ adv_estimator=grpo
 shuffle_dataset=true
 first_time_dataset_prep=true # prepare dataset
 
-test_freq=10
+test_freq=1
 save_freq=50
 total_epochs=10000
-total_training_steps=600
+total_training_steps=1000
 val_before_train=true
 
 use_kl_in_reward=false
@@ -150,8 +150,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.entropy_checkpointing=${entropy_checkpointing} \
     reward_model.reward_manager=${reward_manager} \
     +adv_predictor.enable=true \
-    +adv_predictor.dormant_steps=70 \
-    +adv_predictor.critic_warmup=5 \
+    +adv_predictor.dormant_steps=100 \
+    +adv_predictor.critic_warmup=20 \
     +adv_predictor.replay_buffer_size=${replay_buffer_size} \
     +adv_predictor.train_batch_size=${critic_train_batch_size} \
     +adv_predictor.sampler=uniform \
@@ -186,7 +186,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
     trainer.total_training_steps=${total_training_steps} \
-    trainer.resume_mode=resume_path \
-    trainer.resume_from_path=/workspace/mnt/verl_latest/recipe/deepscaler/checkpoints/DISC/countdown_perf_diff_temp_1_topp_0.9_amplifier_1000/global_step_50 \
+    trainer.resume_mode=disable \
     trainer.log_val_generations=10 \
     $@

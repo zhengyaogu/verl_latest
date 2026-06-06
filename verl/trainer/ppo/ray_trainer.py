@@ -85,6 +85,42 @@ def merge_meta_info(meta_info1, meta_info2):
     meta_info2["timing"] = timing_info1
     return timing_info1
 
+
+class ClusterBandit:
+    """SPaCe Thompson-sampling cluster bandit (paper Algorithm 1)."""
+
+    def __init__(self, K, gamma=0.05, t_consecutive=10, delta=0.0, eps=1e-6, seed=0):
+        self.K = int(K)
+        self.gamma = float(gamma)
+        self.t_consecutive = int(t_consecutive)
+        self.delta = float(delta)
+        self.eps = float(eps)
+        self.R = np.zeros(self.K, dtype=np.float64)
+        self.n = np.zeros(self.K, dtype=np.float64)
+        self.no_improve = np.zeros(self.K, dtype=np.int64)
+        self.rng = np.random.default_rng(seed)
+
+    def score_clusters(self):
+        h = self.R / (self.n + self.eps)
+        estimate = np.abs(h - 0.5)
+        stagnant = (self.no_improve >= self.t_consecutive).astype(np.float64)
+        mean = estimate - self.gamma * stagnant
+        var = 1.0 / (self.n + self.eps)
+        return self.rng.normal(loc=mean, scale=np.sqrt(var))
+
+    def update(self, cluster_id, r_avg):
+        k = int(cluster_id)
+        R_old, n_old = self.R[k], self.n[k]
+        new_solve_rate = (R_old + r_avg) / (n_old + 1.0 + self.eps)
+        prev_solve_rate = R_old / (n_old + self.eps)
+        if new_solve_rate < prev_solve_rate + self.delta:
+            self.no_improve[k] += 1
+        else:
+            self.no_improve[k] = 0
+        self.R[k] = R_old + r_avg
+        self.n[k] = n_old + 1.0
+
+
 @dataclass
 class DISCDataPoint:
     # we opt to not include the prompt in the data point, since it is already prepared in batch
@@ -564,6 +600,20 @@ class RayPPOTrainer:
         if self.config.algorithm.use_kl_in_reward:
             self.kl_ctrl_in_reward = core_algos.get_kl_controller(self.config.algorithm.kl_ctrl)
 
+        self.cluster_bandit = None
+        _space_cfg = self.config.get("space", {})
+        if _space_cfg.get("enable", False):
+            if self.config.adv_predictor.enable:
+                raise ValueError("space.enable and adv_predictor.enable are mutually exclusive")
+            self.cluster_bandit = ClusterBandit(
+                K=int(_space_cfg.num_clusters),
+                gamma=float(_space_cfg.get("gamma", 0.05)),
+                t_consecutive=int(_space_cfg.get("t_consecutive", 10)),
+                delta=float(_space_cfg.get("delta", 0.0)),
+                eps=float(_space_cfg.get("eps", 1e-6)),
+                seed=int(_space_cfg.get("seed", 0)),
+            )
+
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
@@ -747,8 +797,13 @@ class RayPPOTrainer:
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
             )
 
-            # we only do validation on rule-based rm
-            if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
+            # Skip validation only when every item in the batch is model-based (no rule-based
+            # ground truth available). For mixed batches the rule-based items are still scored;
+            # model-based items receive 0 reward (no RM actor during validation).
+            if self.config.reward_model.enable and all(
+                item.non_tensor_batch.get("reward_model", {}).get("style", "rule") == "model"
+                for item in test_batch
+            ):
                 return {}
 
             # Store original inputs
@@ -1203,7 +1258,7 @@ class RayPPOTrainer:
         
         prompt2times_sampled = defaultdict(int)
 
-        if self.config.greso.get("enable", False):
+        if self.config.get("greso", {}).get("enable", False):
             zero_var_streak_index = defaultdict(list)
 
 
@@ -1245,6 +1300,15 @@ class RayPPOTrainer:
                     id2index = dict()
                     for i, uid in enumerate(batch.non_tensor_batch["uid"]):
                         id2index[uid] = batch.non_tensor_batch["index"][i]
+
+                    if self.cluster_bandit is not None and self.global_steps == 1:
+                        _eis = batch.non_tensor_batch.get("extra_info", None)
+                        assert _eis is not None, "space.enable=True but batch has no extra_info"
+                        assert all("cluster_id" in e for e in _eis), \
+                            "extra_info rows missing cluster_id; re-run space_preprocess.py --label_all"
+                        _max_cid = max(int(e["cluster_id"]) for e in _eis)
+                        assert _max_cid < self.cluster_bandit.K, \
+                            f"cluster_id {_max_cid} >= num_clusters={self.cluster_bandit.K}"
 
                     # advantage predictor runs before rollout
                     with marked_timer("curator_total", timing_raw):
@@ -1546,6 +1610,46 @@ class RayPPOTrainer:
                                 sampled_idx = torch.multinomial(sample_weights, num_samples=num_samples, replacement=False)
                                 batch = batch.select_idxs(sampled_idx)
 
+                        with marked_timer("curator_space", timing_raw):
+                            if self.cluster_bandit is not None:
+                                K_train = int(self.config.space.get(
+                                    "train_batch_size", self.config.data.train_batch_size
+                                ))
+                                warmup_steps = int(self.config.space.get("warmup_steps", 0))
+
+                                if self.global_steps <= warmup_steps:
+                                    sampled_idx = torch.randperm(len(batch))[:K_train]
+                                    scores_per_cluster = None
+                                else:
+                                    cluster_ids = np.array(
+                                        [int(e["cluster_id"]) for e in batch.non_tensor_batch["extra_info"]],
+                                        dtype=np.int64,
+                                    )
+                                    scores_per_cluster = self.cluster_bandit.score_clusters()
+                                    prompt_scores = scores_per_cluster[cluster_ids]
+                                    sampled_idx = torch.topk(
+                                        torch.from_numpy(prompt_scores), K_train, dim=0, sorted=False,
+                                    ).indices
+
+                                batch = batch.select_idxs(sampled_idx)
+
+                                kept_cids = np.array(
+                                    [int(e["cluster_id"]) for e in batch.non_tensor_batch["extra_info"]],
+                                    dtype=np.int64,
+                                )
+                                cid_hist = np.bincount(kept_cids, minlength=self.cluster_bandit.K)
+                                logger.log(
+                                    data={f"space/selected_count/cluster_{k}": int(cid_hist[k])
+                                          for k in range(self.cluster_bandit.K)},
+                                    step=self.global_steps,
+                                )
+                                if scores_per_cluster is not None:
+                                    logger.log(
+                                        data={f"space/score/cluster_{k}": float(scores_per_cluster[k])
+                                              for k in range(self.cluster_bandit.K)},
+                                        step=self.global_steps,
+                                    )
+
                     # inference: greedy sampling simply do rollouts in one go, disc sampling do rollouts in multiple iterations
                     sampling_method = self.config.actor_rollout_ref.rollout.get("sampling_method", "greedy")
                     if sampling_method == "greedy":
@@ -1612,11 +1716,12 @@ class RayPPOTrainer:
                                         reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
                             elif sampling_method == "greso":
                                 n_easy, n_hard, n_total = 0, 0, 0
-                                b_r_default = self.config.greso.get("default_rollout_bsz", None) #init b_r with default rollout bsz
+                                _greso_cfg = self.config.get("greso", {})
+                                b_r_default = _greso_cfg.get("default_rollout_bsz", None) #init b_r with default rollout bsz
                                 b_r = b_r_default
-                                p_easy = self.config.greso.get("p_easy", None)
-                                p_hard = self.config.greso.get("p_hard", None)
-                                p_delta = self.config.greso.get("p_delta", None)
+                                p_easy = _greso_cfg.get("p_easy", None)
+                                p_hard = _greso_cfg.get("p_hard", None)
+                                p_delta = _greso_cfg.get("p_delta", None)
                                 assert b_r is not None and p_easy is not None and p_hard is not None and p_delta is not None, "greso sampling method requires default_rollout_bsz, p_easy, p_hard and p_delta to be specified in config.greso"
                                 batch_curr = None
                                 n_added = 0
@@ -1720,7 +1825,7 @@ class RayPPOTrainer:
                                                 batch.batch["token_level_scores"] = token_level_scores
                                         
                                         batch_curr = batch if batch_curr is None else DataProto.concat([batch_curr, batch])
-                                        if len(batch_curr) >= self.config.data.train_batch_size:
+                                        if n_added >= self.config.data.train_batch_size:
                                             break
                                         
                                         #alpha is the current zero-variance example ratio in this iteration (as some rollouts have already occurred in this iteration)
@@ -1743,7 +1848,9 @@ class RayPPOTrainer:
                                             1.25 * (self.config.data.get("train_batch_size", None) - n_added) / (1 - alpha)
                                         )
                                         # next batch
-                                        batch_dict = next(_dataloader_iter)
+                                        batch_dict = next(_dataloader_iter, None)
+                                        if batch_dict is None:
+                                            break
                                         batch = DataProto.from_single_dict(batch_dict)
 
                                         # add uid to batch
@@ -1752,8 +1859,8 @@ class RayPPOTrainer:
                                         )
                                         
                                 id2index = dict()
-                                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
-                                    id2index[uid] = batch.non_tensor_batch["index"][i]
+                                for i, uid in enumerate(batch_curr.non_tensor_batch["uid"]):
+                                    id2index[uid] = batch_curr.non_tensor_batch["index"][i]
                                 zero_var_streak_index = update_streak_index(zero_var_streak_index, batch_curr)
 
                                 batch = batch_curr
@@ -1981,7 +2088,7 @@ class RayPPOTrainer:
                         with marked_timer("adv", timing_raw, color="brown"):
                             # we combine with rule-based rm
                             if not (self.config.actor_rollout_ref.rollout.get("sampling_method", "greedy") == "disc" or
-                                    self.config.greso.get("enable", False)):
+                                    self.config.get("greso", {}).get("enable", False)):
                                 reward_extra_infos_dict: dict[str, list]
                                 if self.config.reward_model.launch_reward_fn_async:
                                     reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
@@ -1989,6 +2096,38 @@ class RayPPOTrainer:
 
                                 if reward_extra_infos_dict:
                                     batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+
+                                if self.cluster_bandit is not None:
+                                    per_row_r = batch.batch["token_level_scores"].sum(dim=-1).detach().cpu().numpy()
+                                    cluster_ids = np.array(
+                                        [int(e["cluster_id"]) for e in batch.non_tensor_batch["extra_info"]],
+                                        dtype=np.int64,
+                                    )
+                                    uids = batch.non_tensor_batch["uid"]
+
+                                    prompt_r = defaultdict(list)
+                                    prompt_cid = {}
+                                    for i, uid in enumerate(uids):
+                                        prompt_r[uid].append(float(per_row_r[i]))
+                                        prompt_cid[uid] = int(cluster_ids[i])
+
+                                    cluster_buf = defaultdict(list)
+                                    for uid, rs in prompt_r.items():
+                                        cluster_buf[prompt_cid[uid]].append(float(np.mean(rs)))
+
+                                    for cid, rs in cluster_buf.items():
+                                        r_avg = float(np.mean(rs))
+                                        self.cluster_bandit.update(cid, r_avg)
+                                        logger.log(
+                                            data={
+                                                f"space/r_avg/cluster_{cid}": r_avg,
+                                                f"space/n_pulls/cluster_{cid}": float(self.cluster_bandit.n[cid]),
+                                                f"space/solve_rate/cluster_{cid}":
+                                                    float(self.cluster_bandit.R[cid] / (self.cluster_bandit.n[cid] + self.cluster_bandit.eps)),
+                                                f"space/no_improve/cluster_{cid}": int(self.cluster_bandit.no_improve[cid]),
+                                            },
+                                            step=self.global_steps,
+                                        )
 
                             # compute rewards. apply_kl_penalty if available
                             if self.config.algorithm.use_kl_in_reward:
@@ -2231,10 +2370,24 @@ class RayPPOTrainer:
                                         perf_diff_unit_cliprange_lo = self.config.adv_predictor.get("perf_diff_unit_cliprange_lo", None)
                                         perf_diff_unit_cliprange_hi = self.config.adv_predictor.get("perf_diff_unit_cliprange_hi", None)
                                         id2perf_diff = compute_abs_adv_by_group(
-                                            batch, 
-                                            cliprange_lo=perf_diff_unit_cliprange_lo, 
+                                            batch,
+                                            cliprange_lo=perf_diff_unit_cliprange_lo,
                                             cliprange_hi=perf_diff_unit_cliprange_hi
                                         )
+
+                                        chosen_perf_diff_values = list(id2perf_diff.values())
+                                        num_chosen = len(chosen_perf_diff_values)
+                                        chosen_perf_diff_sum = float(sum(chosen_perf_diff_values))
+                                        chosen_perf_diff_mean = chosen_perf_diff_sum / num_chosen if num_chosen > 0 else 0.0
+                                        logger.log(
+                                            data={
+                                                "adv_predictor/perf_diff/chosen_sum": chosen_perf_diff_sum,
+                                                "adv_predictor/perf_diff/chosen_mean": chosen_perf_diff_mean,
+                                                "adv_predictor/perf_diff/chosen_count": num_chosen,
+                                            },
+                                            step=self.global_steps,
+                                        )
+
                                         perf_diff = []
                                         perf_diff_window_avg = []
                                         for i, uid in enumerate(adv_predictor_batch.non_tensor_batch["uid"]):
